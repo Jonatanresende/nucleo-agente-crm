@@ -30,6 +30,7 @@
  */
 import { DESCRITOR_DE_FOTOS } from './prompt-oficial.ts'
 
+const CHAVE_GEMINI = Deno.env.get('GEMINI_API_KEY') ?? ''
 const CHAVE_OPENAI = Deno.env.get('OPENAI_API_KEY') ?? ''
 const CHAVE_ANTHROPIC = Deno.env.get('ANTHROPIC_API_KEY') ?? ''
 
@@ -86,6 +87,10 @@ export interface PedidoLLM {
   maxTokens?: number
 }
 
+export function ehGemini(modelo: string): boolean {
+  return modelo.startsWith('gemini-')
+}
+
 export function ehAnthropic(modelo: string): boolean {
   return modelo.startsWith('claude-')
 }
@@ -123,12 +128,13 @@ function teto(modelo: string): number {
  * desligado na tela em vez de ser escolhido e derrubar a secretária em
  * silêncio. Ver `src/lib/modelosIA.ts`.
  */
-export function chavesDeIA(): { openai: boolean; anthropic: boolean } {
-  return { openai: !!CHAVE_OPENAI, anthropic: !!CHAVE_ANTHROPIC }
+export function chavesDeIA(): { google: boolean; openai: boolean; anthropic: boolean } {
+  return { google: !!CHAVE_GEMINI, openai: !!CHAVE_OPENAI, anthropic: !!CHAVE_ANTHROPIC }
 }
 
 /** Despacha para o fornecedor certo. */
 export function conversar(pedido: PedidoLLM): Promise<RespostaLLM> {
+  if (ehGemini(pedido.modelo)) return viaGemini(pedido)
   return ehAnthropic(pedido.modelo) ? viaAnthropic(pedido) : viaOpenAI(pedido)
 }
 
@@ -214,13 +220,89 @@ async function viaOpenAI(pedido: PedidoLLM): Promise<RespostaLLM> {
 
   return {
     texto: typeof msg.content === 'string' ? msg.content : '',
-    chamadas: (msg.tool_calls ?? []).map((c: Record<string, never>) => ({
-      id: (c as { id: string }).id,
-      nome: (c as { function: { name: string } }).function.name,
-      // SEMPRE com JSON.parse: o escape do argumento varia por modelo, e
-      // comparar string crua quebra em acento e em barra.
-      argumentos: comoObjeto((c as { function: { arguments: string } }).function.arguments),
-    })),
+    chamadas: (msg.tool_calls ?? []).map((c: unknown) => {
+      const tc = c as { id: string; function: { name: string; arguments: string } }
+      return {
+        id: tc.id,
+        nome: tc.function.name,
+        argumentos: comoObjeto(tc.function.arguments),
+      }
+    }),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Google Gemini — /v1beta/openai/chat/completions
+// ---------------------------------------------------------------------------
+
+async function viaGemini(pedido: PedidoLLM): Promise<RespostaLLM> {
+  if (!CHAVE_GEMINI) throw new Error('GEMINI_API_KEY ausente')
+
+  const mensagens: Record<string, unknown>[] = [
+    { role: 'system', content: pedido.sistema },
+  ]
+
+  for (const m of pedido.mensagens) {
+    if (m.papel === 'ferramenta') {
+      mensagens.push({
+        role: 'tool',
+        tool_call_id: m.chamadaId,
+        content: typeof m.conteudo === 'string' ? m.conteudo : JSON.stringify(m.conteudo),
+      })
+    } else if (m.papel === 'assistant') {
+      mensagens.push({
+        role: 'assistant',
+        content: typeof m.conteudo === 'string' ? m.conteudo : null,
+        ...(m.chamadas?.length
+          ? {
+              tool_calls: m.chamadas.map((c) => ({
+                id: c.id,
+                type: 'function',
+                function: { name: c.nome, arguments: JSON.stringify(c.argumentos) },
+              })),
+            }
+          : {}),
+      })
+    } else {
+      mensagens.push({ role: 'user', content: conteudoOpenAI(m.conteudo) })
+    }
+  }
+
+  const corpo: Record<string, unknown> = {
+    model: pedido.modelo,
+    max_tokens: pedido.maxTokens ?? 2048,
+    messages: mensagens,
+  }
+  if (pedido.ferramentas.length) {
+    corpo.tools = pedido.ferramentas.map((f) => ({
+      type: 'function',
+      function: { name: f.nome, description: f.descricao, parameters: f.parametros },
+    }))
+  }
+
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${CHAVE_GEMINI}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(corpo),
+  })
+  if (!r.ok) throw new Error(`gemini: ${r.status} ${await r.text()}`)
+
+  const dados = await r.json()
+  const msg = dados?.choices?.[0]?.message ?? {}
+
+  return {
+    texto: typeof msg.content === 'string' ? msg.content : '',
+    chamadas: (msg.tool_calls ?? []).map((c: unknown) => {
+      const tc = c as { id: string; function: { name: string; arguments: string } }
+      return {
+        id: tc.id,
+        nome: tc.function.name,
+        argumentos: comoObjeto(tc.function.arguments),
+      }
+    }),
   }
 }
 
@@ -361,44 +443,94 @@ export async function descreverImagem(
   base64: string,
   tipoMime: string,
 ): Promise<string | null> {
-  if (!CHAVE_OPENAI) return null
+  if (CHAVE_OPENAI) {
+    try {
+      const r = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${CHAVE_OPENAI}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: MODELO_VISAO,
+          max_tokens: 300,
+          messages: [
+            { role: 'system', content: DESCRITOR_DE_FOTOS },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Descreva esta foto.' },
+                {
+                  type: 'image_url',
+                  image_url: { url: `data:${tipoMime};base64,${base64}` },
+                },
+              ],
+            },
+          ],
+        }),
+      })
+      if (r.ok) {
+        const dados = await r.json()
+        const texto = (dados?.choices?.[0]?.message?.content ?? '').trim()
+        if (texto) return texto
+      } else {
+        console.error('visao openai:', r.status, (await r.text()).slice(0, 300))
+      }
+    } catch (e) {
+      console.error('visao openai:', e)
+    }
+  }
 
-  try {
-    const r = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${CHAVE_OPENAI}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: MODELO_VISAO,
-        max_tokens: 300,
-        messages: [
-          { role: 'system', content: DESCRITOR_DE_FOTOS },
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'Descreva esta foto.' },
+  // Fallback Gemini
+  if (CHAVE_GEMINI) {
+    try {
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CHAVE_GEMINI}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: DESCRITOR_DE_FOTOS }],
+            },
+            contents: [
               {
-                type: 'image_url',
-                image_url: { url: `data:${tipoMime};base64,${base64}` },
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: tipoMime,
+                      data: base64,
+                    },
+                  },
+                  { text: 'Descreva esta foto.' },
+                ],
               },
             ],
-          },
-        ],
-      }),
-    })
-    if (!r.ok) {
-      console.error('visao:', r.status, (await r.text()).slice(0, 300))
-      return null
+          }),
+        },
+      )
+      if (r.ok) {
+        const dados = await r.json()
+        const texto = (dados?.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim()
+        return texto || null
+      } else {
+        console.error('visao gemini:', r.status, (await r.text()).slice(0, 300))
+      }
+    } catch (e) {
+      console.error('visao gemini:', e)
     }
-    const dados = await r.json()
-    const texto = (dados?.choices?.[0]?.message?.content ?? '').trim()
-    return texto || null
-  } catch (e) {
-    console.error('visao:', e)
-    return null
   }
+
+  return null
+}
+
+function bytesParaBase64(bytes: Uint8Array): string {
+  let bin = ''
+  const tam = bytes.length
+  for (let i = 0; i < tam; i += 8192) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 8192))
+  }
+  return btoa(bin)
 }
 
 /**
@@ -430,33 +562,75 @@ function extensaoDeAudio(tipoMime: string): string {
 /**
  * Transcreve o áudio do paciente.
  *
- * Usa a chave da OpenAI **mesmo quando o modelo de conversa é o Claude**:
- * nenhum dos dois aceita áudio cru na API de mensagens, então a transcrição é
- * um passo separado de qualquer jeito.
+ * Usa a OpenAI (Whisper) ou o Google Gemini como fallback:
+ * transcreve o áudio antes de entrar no fluxo de mensagens.
  */
 export async function transcrever(bytes: Uint8Array, tipoMime: string): Promise<string | null> {
-  if (!CHAVE_OPENAI) return null
+  if (CHAVE_OPENAI) {
+    const extensao = extensaoDeAudio(tipoMime)
 
-  const extensao = extensaoDeAudio(tipoMime)
+    const formulario = new FormData()
+    formulario.append('file', new Blob([bytes as unknown as BlobPart], { type: tipoMime }), `audio.${extensao}`)
+    formulario.append('model', 'whisper-1')
+    formulario.append('language', 'pt')
 
-  const formulario = new FormData()
-  formulario.append('file', new Blob([bytes], { type: tipoMime }), `audio.${extensao}`)
-  formulario.append('model', 'whisper-1')
-  formulario.append('language', 'pt')
-
-  try {
-    const r = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${CHAVE_OPENAI}` },
-      body: formulario,
-    })
-    if (!r.ok) return null
-    const dados = await r.json()
-    const texto = (dados?.text ?? '').trim()
-    return texto || null
-  } catch {
-    return null
+    try {
+      const r = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${CHAVE_OPENAI}` },
+        body: formulario,
+      })
+      if (r.ok) {
+        const dados = await r.json()
+        const texto = (dados?.text ?? '').trim()
+        if (texto) return texto
+      }
+    } catch {
+      // Falha OpenAI tenta Gemini
+    }
   }
+
+  // Fallback Gemini
+  if (CHAVE_GEMINI) {
+    try {
+      const b64 = bytesParaBase64(bytes)
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CHAVE_GEMINI}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: tipoMime || 'audio/ogg',
+                      data: b64,
+                    },
+                  },
+                  {
+                    text: 'Transcreva o áudio em português com exatidão. Retorne apenas o texto transcrito, sem introduções ou observações.',
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      )
+      if (r.ok) {
+        const dados = await r.json()
+        const texto = (dados?.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim()
+        return texto || null
+      } else {
+        console.error('transcrever gemini:', r.status, (await r.text()).slice(0, 300))
+      }
+    } catch (e) {
+      console.error('transcrever gemini:', e)
+    }
+  }
+
+  return null
 }
 
 // ---------------------------------------------------------------------------

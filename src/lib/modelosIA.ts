@@ -32,7 +32,7 @@ import type { ModeloAgente } from '../types'
 
 const BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp`
 
-export type FornecedorIA = 'openai' | 'anthropic'
+export type FornecedorIA = 'google' | 'openai' | 'anthropic'
 
 export interface ModeloIA {
   valor: ModeloAgente
@@ -53,6 +53,7 @@ export interface ModeloIA {
 }
 
 export const FORNECEDORES: Record<FornecedorIA, { nome: string; chave: string }> = {
+  google: { nome: 'Google (Gemini)', chave: 'GEMINI_API_KEY' },
   openai: { nome: 'OpenAI', chave: 'OPENAI_API_KEY' },
   anthropic: { nome: 'Anthropic (Claude)', chave: 'ANTHROPIC_API_KEY' },
 }
@@ -71,6 +72,18 @@ export const FORNECEDORES: Record<FornecedorIA, { nome: string; chave: string }>
  * documentação e não responde nesta conta é um card que promete e falha.
  */
 export const MODELOS: ModeloIA[] = [
+  {
+    valor: 'gemini-2.5-flash', nome: 'Gemini 2.5 Flash', fornecedor: 'google',
+    nota: 'Extremamente rápido e econômico. Ótimo raciocínio e ferramentas.',
+  },
+  {
+    valor: 'gemini-2.5-pro', nome: 'Gemini 2.5 Pro', fornecedor: 'google',
+    nota: 'Modelo mais avançado do Google para raciocínio complexo.',
+  },
+  {
+    valor: 'gemini-2.0-flash', nome: 'Gemini 2.0 Flash', fornecedor: 'google',
+    nota: 'Geração anterior ultrarrápida do Google.',
+  },
   {
     valor: 'gpt-4.1-mini', nome: 'GPT-4.1 mini', fornecedor: 'openai',
     nota: 'O mais barato. Responde na hora, sem parar para pensar.',
@@ -107,7 +120,7 @@ export const MODELOS: ModeloIA[] = [
 ]
 
 /** A ordem em que os blocos aparecem na tela. */
-export const ORDEM_FORNECEDORES: FornecedorIA[] = ['openai', 'anthropic']
+export const ORDEM_FORNECEDORES: FornecedorIA[] = ['google', 'openai', 'anthropic']
 
 export function modelosDe(fornecedor: FornecedorIA): ModeloIA[] {
   return MODELOS.filter((m) => m.fornecedor === fornecedor)
@@ -143,7 +156,7 @@ export async function lerChavesIA(): Promise<ChavesIA | null> {
     })
     const d = await r.json()
     if (!d?.ok) return null
-    return { openai: !!d.openai, anthropic: !!d.anthropic }
+    return { google: !!d.google, openai: !!d.openai, anthropic: !!d.anthropic }
   } catch {
     return null
   }

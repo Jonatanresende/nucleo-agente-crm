@@ -300,9 +300,21 @@ async function conferirAgente(agente, relato) {
     return
   }
 
+  const gemini = agente.GEMINI_API_KEY ?? ''
+  if (!gemini) {
+    linha('GEMINI_API_KEY', INFO, 'vazia. Preencha se for usar os modelos Google Gemini')
+  } else {
+    const r = await pedir(`https://generativelanguage.googleapis.com/v1beta/models?key=${gemini}`)
+    if (r.status === 200) linha('GEMINI_API_KEY', OK, 'o Google aceitou a chave do Gemini')
+    else if (r.status === 400 || r.status === 401 || r.status === 403) linha('GEMINI_API_KEY', ERRO, 'o Google recusou esta chave. Copie de novo, inteira')
+    else linha('GEMINI_API_KEY', AVISO, r.status ? `o Google respondeu ${r.status}` : 'não consegui testar (sem internet?)')
+  }
+
   const openai = agente.OPENAI_API_KEY ?? ''
-  if (!openai) {
-    linha('OPENAI_API_KEY', ERRO, 'vazia, e é obrigatória: é ela que ouve os áudios e vê as fotos, mesmo com um Claude na tela')
+  if (!openai && !gemini) {
+    linha('OPENAI_API_KEY / GEMINI_API_KEY', ERRO, 'nenhuma configurada: informe pelo menos a OPENAI_API_KEY ou GEMINI_API_KEY')
+  } else if (!openai) {
+    linha('OPENAI_API_KEY', INFO, 'vazia. Os modelos OpenAI estão desligados; Gemini atenderá conversas, áudio e fotos')
   } else if (!openai.startsWith('sk-')) {
     linha('OPENAI_API_KEY', ERRO, 'não parece uma chave da OpenAI: ela começa com sk-')
   } else {
