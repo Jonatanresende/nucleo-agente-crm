@@ -346,8 +346,11 @@ async function processar(
       ferramentas,
     })
 
+    if (r.texto.trim()) {
+      resposta = resposta ? `${resposta}\n\n${r.texto}` : r.texto
+    }
+
     if (!r.chamadas.length) {
-      resposta = r.texto
       break
     }
 
