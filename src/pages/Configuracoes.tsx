@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react'
 import {
   User, Clock, Upload, Save, MapPin, Check, Eye, EyeOff,
-  Building2, KeyRound, Trash2,
+  Building2, KeyRound, Trash2, MessageSquare,
 } from 'lucide-react'
 import zxcvbn from 'zxcvbn'
 import { supabase } from '../lib/supabase'
 import type { Usuario, ConfiguracoesClinica, HorarioComercial } from '../types'
 import TabClinica from '../components/TabClinica'
+import TabCanalClientes from '../components/TabCanalClientes'
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal'
 import { useAgente } from '../lib/agente'
 import { MARCA, MARCA_SUAVE, MARCA_CLARO, COR_PADRAO } from '../lib/marca'
@@ -116,19 +117,20 @@ const FUSOS = [
 
 const FUSO_PADRAO = 'America/Sao_Paulo'
 
-type TabKey = 'perfil' | 'clinica' | 'horarios'
+type TabKey = 'perfil' | 'clinica' | 'horarios' | 'canal_clientes'
 
 /**
- * Só o que é configuração da clínica.
+ * Só o que é configuração da clínica e canais.
  *
  * Procedimentos virou página na barra lateral; Secretária de IA e Token e API
  * saíram para o menu do usuário — as duas são acesso e comportamento do
  * sistema, não cadastro da clínica.
  */
 const TABS: { key: TabKey; label: string; icon: React.ElementType }[] = [
-  { key: 'perfil',   label: 'Perfil',                    icon: User },
-  { key: 'clinica',  label: 'Empresa',                   icon: MapPin },
-  { key: 'horarios', label: 'Horários de Funcionamento', icon: Clock },
+  { key: 'perfil',          label: 'Perfil',                    icon: User },
+  { key: 'clinica',         label: 'Empresa',                   icon: MapPin },
+  { key: 'horarios',        label: 'Horários de Funcionamento', icon: Clock },
+  { key: 'canal_clientes',  label: 'WhatsApp Clientes',         icon: MessageSquare },
 ]
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
@@ -825,6 +827,7 @@ export default function Configuracoes() {
         {activeTab === 'perfil' && userId && <TabPerfil userId={userId} />}
         {activeTab === 'clinica' && <TabClinica />}
         {activeTab === 'horarios' && <TabHorarios />}
+        {activeTab === 'canal_clientes' && <TabCanalClientes />}
       </div>
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>

@@ -437,3 +437,59 @@ export interface ConversaResumo {
    */
   data_agendamento: string | null
 }
+
+/* ===========================================================================
+ * Canal de Atendimento ao Cliente — 2º número de WhatsApp (migração 0031)
+ *
+ * Público: clientes existentes (não leads de anúncio). Sem IA — somente
+ * atendente humano. Tabelas separadas de crm_clinica_dados/mensagens_whatsapp.
+ * =========================================================================== */
+
+/** Quem escreveu no canal de clientes. */
+export type AutorMensagemCliente = 'cliente' | 'atendente'
+
+/** Contato registrado no canal de atendimento ao cliente. */
+export interface ClienteChat {
+  id: string
+  nome: string | null
+  whatsapp: string
+  assumido_por: string | null
+  assumido_em: string | null
+  criado_em: string
+  ultimo_contato: string | null
+}
+
+/** Uma mensagem do canal de atendimento ao cliente. */
+export interface MensagemCliente {
+  id: string
+  cliente_id: string
+  autor: AutorMensagemCliente
+  tipo: TipoMensagem
+  conteudo: string | null
+  id_externo: string | null
+  enviada_por: string | null
+  lida: boolean
+  criada_em: string
+}
+
+/**
+ * Uma linha da view `clientes_chat_lista` (migração 0031) — o que a coluna da
+ * esquerda da aba "Atendimento ao Cliente" mostra de cada contato.
+ *
+ * Análoga a `ConversaResumo` para o canal IA. Somente leitura.
+ */
+export interface ClienteChatResumo {
+  cliente_id: string
+  nome: string | null
+  whatsapp: string
+  assumido_por: string | null
+  assumido_em: string | null
+  assumido_por_nome: string | null
+  ultimo_conteudo: string | null
+  ultimo_tipo: TipoMensagem
+  ultimo_autor: AutorMensagemCliente
+  ultima_em: string
+  /** Só conta mensagem do cliente. É a bolinha azul da lista. */
+  nao_lidas: number
+}
+

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { Bot, UserCheck } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+
+// Canal IA
 import ListaConversas from '../components/ListaConversas'
 import JanelaConversa from '../components/JanelaConversa'
 import PainelLead from '../components/PainelLead'
@@ -8,58 +11,84 @@ import {
   listarConversas, carregarMensagens, enviarMensagem,
   assumirConversa, devolverConversa, marcarComoLidas,
 } from '../lib/conversas'
-import type { ConversaResumo, MensagemWhatsapp } from '../types'
+
+// Canal de Atendimento ao Cliente
+import ListaConversasClientes from '../components/ListaConversasClientes'
+import JanelaConversaClientes from '../components/JanelaConversaClientes'
+import {
+  listarConversasClientes, carregarMensagensCliente, enviarMensagemCliente,
+  assumirContatoCliente, devolverContatoCliente, marcarClienteComoLido,
+} from '../lib/conversas-clientes'
+
+import type { ConversaResumo, MensagemWhatsapp, ClienteChatResumo, MensagemCliente } from '../types'
+import { MARCA } from '../lib/marca'
 
 /**
- * A tela Conversas — o WhatsApp da clínica dentro do sistema.
+ * A tela Conversas — duas abas: Atendente IA e Atendimento ao Cliente.
  *
- * ⚠️ REALTIME ASSINA A TABELA, NUNCA A VIEW. A lista vem de `conversas_lista`,
- * mas a assinatura é em `mensagens_whatsapp` e `crm_clinica_dados`: o Postgres
- * só replica tabela. Assinar a view não dá erro — simplesmente nunca dispara.
+ * ⚠️ REALTIME ASSINA TABELAS, NUNCA VIEWS. Cada aba assina suas próprias
+ * tabelas: `mensagens_whatsapp` + `crm_clinica_dados` para a aba IA, e
+ * `mensagens_clientes` + `clientes_chat` para a aba Clientes.
  *
- * Chega evento, a lista é RELIDA em vez de remendada com o payload. O payload
- * traz a linha da tabela; a lista precisa da última mensagem, do contador de
- * não lidas e do nome de quem assumiu, que são calculados na view.
+ * A aba ativa é gravada em `?aba=ia` ou `?aba=clientes` na URL, para que
+ * o botão "voltar" do navegador restaure a aba correta.
  */
+
+const FONTE = "'Plus Jakarta Sans', sans-serif"
+
+type Aba = 'ia' | 'clientes'
+
 export default function Conversas() {
   const [params, setParams] = useSearchParams()
 
-  const [conversas, setConversas] = useState<ConversaResumo[]>([])
-  const [selecionada, setSelecionada] = useState<string | null>(params.get('lead'))
-  const [mensagens, setMensagens] = useState<MensagemWhatsapp[]>([])
+  const abaInicial: Aba = params.get('aba') === 'clientes' ? 'clientes' : 'ia'
+  const [aba, setAba] = useState<Aba>(abaInicial)
 
+  const [usuarioId, setUsuarioId] = useState<string | null>(null)
+
+  // ── Estado do canal IA ─────────────────────────────────────────────────────
+  const [conversas, setConversas] = useState<ConversaResumo[]>([])
+  const [selecionada, setSelecionada] = useState<string | null>(
+    aba === 'ia' ? params.get('lead') : null
+  )
+  const [mensagens, setMensagens] = useState<MensagemWhatsapp[]>([])
   const [carregandoLista, setCarregandoLista] = useState(true)
   const [carregandoConversa, setCarregandoConversa] = useState(false)
   const [enviando, setEnviando] = useState(false)
   const [erro, setErro] = useState('')
-  const [usuarioId, setUsuarioId] = useState<string | null>(null)
 
-  // Aberto ou fechado é preferência de quem usa, e sobrevive ao F5. Se falhar
-  // (navegador anônimo, site data bloqueado), abre — que é o padrão útil.
+  // ── Estado do canal Clientes ───────────────────────────────────────────────
+  const [conversasClientes, setConversasClientes] = useState<ClienteChatResumo[]>([])
+  const [selecionadaCliente, setSelecionadaCliente] = useState<string | null>(
+    aba === 'clientes' ? params.get('cliente') : null
+  )
+  const [mensagensCliente, setMensagensCliente] = useState<MensagemCliente[]>([])
+  const [carregandoListaClientes, setCarregandoListaClientes] = useState(true)
+  const [carregandoConversaCliente, setCarregandoConversaCliente] = useState(false)
+  const [enviandoCliente, setEnviandoCliente] = useState(false)
+  const [erroCliente, setErroCliente] = useState('')
+
+  // Painel lateral (preferência salva por canal)
   const [painelAberto, setPainelAberto] = useState(() => {
     try { return localStorage.getItem('conversas.painel') !== 'fechado' } catch { return true }
   })
+  const [painelClienteAberto, setPainelClienteAberto] = useState(() => {
+    try { return localStorage.getItem('conversas-clientes.painel') !== 'fechado' } catch { return true }
+  })
 
-  function alternarPainel() {
-    setPainelAberto((antes) => {
-      const agora = !antes
-      try { localStorage.setItem('conversas.painel', agora ? 'aberto' : 'fechado') } catch { /* segue */ }
-      return agora
-    })
-  }
-
-  // O callback do Realtime é criado uma vez e enxergaria para sempre o valor
-  // inicial de `selecionada`. O ref é o que o mantém em dia.
+  // Refs para o Realtime (não enxerga closure de estado)
   const abertaRef = useRef<string | null>(selecionada)
   useEffect(() => { abertaRef.current = selecionada }, [selecionada])
+
+  const abertaClienteRef = useRef<string | null>(selecionadaCliente)
+  useEffect(() => { abertaClienteRef.current = selecionadaCliente }, [selecionadaCliente])
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUsuarioId(data.user?.id ?? null))
   }, [])
 
-  // Escritas em `.then()`, e não com `await`, porque estas duas rodam dentro de
-  // efeito: o React avisa que `setState` no corpo do efeito encadeia render em
-  // cima de render. Dentro do callback não encadeia — é o mesmo padrão do CRM.
+  // ── Carregadores ──────────────────────────────────────────────────────────
+
   const recarregarLista = useCallback(() =>
     listarConversas()
       .then((c) => { setConversas(c); setCarregandoLista(false) })
@@ -72,57 +101,89 @@ export default function Conversas() {
       .catch(() => { setErro('Não consegui carregar esta conversa.'); setCarregandoConversa(false) }),
   [])
 
-  useEffect(() => { recarregarLista() }, [recarregarLista])
+  const recarregarListaClientes = useCallback(() =>
+    listarConversasClientes()
+      .then((c) => { setConversasClientes(c); setCarregandoListaClientes(false) })
+      .catch(() => { setErroCliente('Não consegui carregar as conversas.'); setCarregandoListaClientes(false) }),
+  [])
 
-  // Abrir uma conversa: carrega e zera as não lidas.
+  const recarregarMensagensCliente = useCallback((clienteId: string) =>
+    carregarMensagensCliente(clienteId)
+      .then((m) => { setMensagensCliente(m); setCarregandoConversaCliente(false) })
+      .catch(() => { setErroCliente('Não consegui carregar esta conversa.'); setCarregandoConversaCliente(false) }),
+  [])
+
+  // ── Carregamento inicial ──────────────────────────────────────────────────
+
+  useEffect(() => { recarregarLista() }, [recarregarLista])
+  useEffect(() => { recarregarListaClientes() }, [recarregarListaClientes])
+
+  // Abrir uma conversa IA
   useEffect(() => {
     if (!selecionada) return
     recarregarMensagens(selecionada)
     marcarComoLidas(selecionada).then(recarregarLista)
   }, [selecionada, recarregarMensagens, recarregarLista])
 
-  // Realtime.
+  // Abrir uma conversa de cliente
+  useEffect(() => {
+    if (!selecionadaCliente) return
+    recarregarMensagensCliente(selecionadaCliente)
+    marcarClienteComoLido(selecionadaCliente).then(recarregarListaClientes)
+  }, [selecionadaCliente, recarregarMensagensCliente, recarregarListaClientes])
+
+  // ── Realtime ──────────────────────────────────────────────────────────────
+
   useEffect(() => {
     const canal = supabase
-      .channel('conversas')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'mensagens_whatsapp' },
+      .channel('conversas-ia')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_whatsapp' },
         (payload) => {
           const linha = (payload.new ?? payload.old) as { lead_id?: string } | null
           recarregarLista()
           if (linha?.lead_id && linha.lead_id === abertaRef.current) {
             recarregarMensagens(linha.lead_id)
           }
-        },
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'crm_clinica_dados' },
-        () => recarregarLista(),
-      )
+        })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'crm_clinica_dados' },
+        () => recarregarLista())
       .subscribe()
 
     return () => { supabase.removeChannel(canal) }
   }, [recarregarLista, recarregarMensagens])
 
-  const aberta = conversas.find((c) => c.lead_id === selecionada) ?? null
+  useEffect(() => {
+    const canal = supabase
+      .channel('conversas-clientes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_clientes' },
+        (payload) => {
+          const linha = (payload.new ?? payload.old) as { cliente_id?: string } | null
+          recarregarListaClientes()
+          if (linha?.cliente_id && linha.cliente_id === abertaClienteRef.current) {
+            recarregarMensagensCliente(linha.cliente_id)
+          }
+        })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'clientes_chat' },
+        () => recarregarListaClientes())
+      .subscribe()
 
-  function selecionar(leadId: string) {
+    return () => { supabase.removeChannel(canal) }
+  }, [recarregarListaClientes, recarregarMensagensCliente])
+
+  // ── Handlers canal IA ──────────────────────────────────────────────────────
+
+  function selecionarConversa(leadId: string) {
     if (leadId === selecionada) return
-    // Limpar aqui, e não no efeito: trocar de conversa mostraria por um
-    // instante as mensagens da anterior debaixo do nome da nova.
     setMensagens([])
     setCarregandoConversa(true)
     setErro('')
     setSelecionada(leadId)
-    setParams({ lead: leadId }, { replace: true })
+    setParams({ aba: 'ia', lead: leadId }, { replace: true })
   }
 
   async function aoEnviar(texto: string) {
     if (!selecionada) return
-    setEnviando(true)
-    setErro('')
+    setEnviando(true); setErro('')
     try {
       await enviarMensagem(selecionada, texto)
       await recarregarMensagens(selecionada)
@@ -136,54 +197,188 @@ export default function Conversas() {
   async function aoAssumir() {
     if (!selecionada || !usuarioId) return
     setErro('')
-    try {
-      await assumirConversa(selecionada, usuarioId)
-      await recarregarLista()
-    } catch {
-      setErro('Não consegui assumir a conversa.')
-    }
+    try { await assumirConversa(selecionada, usuarioId); await recarregarLista() }
+    catch { setErro('Não consegui assumir a conversa.') }
   }
 
   async function aoDevolver() {
     if (!selecionada) return
     setErro('')
+    try { await devolverConversa(selecionada); await recarregarLista() }
+    catch { setErro('Não consegui devolver a conversa.') }
+  }
+
+  // ── Handlers canal Clientes ────────────────────────────────────────────────
+
+  function selecionarCliente(clienteId: string) {
+    if (clienteId === selecionadaCliente) return
+    setMensagensCliente([])
+    setCarregandoConversaCliente(true)
+    setErroCliente('')
+    setSelecionadaCliente(clienteId)
+    setParams({ aba: 'clientes', cliente: clienteId }, { replace: true })
+  }
+
+  async function aoEnviarCliente(texto: string) {
+    if (!selecionadaCliente) return
+    setEnviandoCliente(true); setErroCliente('')
     try {
-      await devolverConversa(selecionada)
-      await recarregarLista()
+      await enviarMensagemCliente(selecionadaCliente, texto)
+      await recarregarMensagensCliente(selecionadaCliente)
+      await recarregarListaClientes()
     } catch {
-      setErro('Não consegui devolver a conversa.')
+      setErroCliente('A mensagem não saiu. Confira a conexão do 2º número.')
     }
+    setEnviandoCliente(false)
+  }
+
+  async function aoAssumirCliente() {
+    if (!selecionadaCliente || !usuarioId) return
+    setErroCliente('')
+    try { await assumirContatoCliente(selecionadaCliente, usuarioId); await recarregarListaClientes() }
+    catch { setErroCliente('Não consegui assumir o atendimento.') }
+  }
+
+  async function aoDevolverCliente() {
+    if (!selecionadaCliente) return
+    setErroCliente('')
+    try { await devolverContatoCliente(selecionadaCliente); await recarregarListaClientes() }
+    catch { setErroCliente('Não consegui liberar o atendimento.') }
+  }
+
+  // ── Badges de notificação ─────────────────────────────────────────────────
+
+  const naoLidasIA = conversas.reduce((acc, c) => acc + c.nao_lidas, 0)
+  const naoLidasClientes = conversasClientes.reduce((acc, c) => acc + c.nao_lidas, 0)
+
+  // ── Dados da conversa aberta ──────────────────────────────────────────────
+
+  const abertaIA = conversas.find((c) => c.lead_id === selecionada) ?? null
+  const abertaCliente = conversasClientes.find((c) => c.cliente_id === selecionadaCliente) ?? null
+
+  // ── Alternadores de painel ────────────────────────────────────────────────
+
+  function alternarPainel() {
+    setPainelAberto((antes) => {
+      const agora = !antes
+      try { localStorage.setItem('conversas.painel', agora ? 'aberto' : 'fechado') } catch { /* segue */ }
+      return agora
+    })
+  }
+
+  function alternarPainelCliente() {
+    setPainelClienteAberto((antes) => {
+      const agora = !antes
+      try { localStorage.setItem('conversas-clientes.painel', agora ? 'aberto' : 'fechado') } catch { /* segue */ }
+      return agora
+    })
+  }
+
+  // ── Troca de aba ─────────────────────────────────────────────────────────
+
+  function trocarAba(nova: Aba) {
+    setAba(nova)
+    const novosParams: Record<string, string> = { aba: nova }
+    if (nova === 'ia' && selecionada) novosParams.lead = selecionada
+    if (nova === 'clientes' && selecionadaCliente) novosParams.cliente = selecionadaCliente
+    setParams(novosParams, { replace: true })
   }
 
   return (
-    // Coluna: a faixa de aviso ocupa a largura inteira, e as três colunas da
-    // tela ficam na linha de baixo. `minHeight: 0` no meio é o que deixa elas
-    // rolarem por dentro em vez de esticar a página.
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#fff' }}>
+
+      {/* Abas */}
+      <div style={{
+        display: 'flex', borderBottom: '2px solid #EDF2F4', background: '#fff',
+        flexShrink: 0, paddingLeft: 18, gap: 0,
+      }}>
+        {(['ia', 'clientes'] as Aba[]).map((a) => {
+          const ativo = aba === a
+          const naoLidas = a === 'ia' ? naoLidasIA : naoLidasClientes
+          return (
+            <button
+              key={a}
+              id={`aba-conversas-${a}`}
+              onClick={() => trocarAba(a)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 7,
+                padding: '11px 18px 10px', border: 'none', cursor: 'pointer',
+                fontSize: 13, fontWeight: 700, fontFamily: FONTE,
+                background: 'transparent',
+                color: ativo ? MARCA : '#6B818C',
+                borderBottom: ativo ? `2px solid ${MARCA}` : '2px solid transparent',
+                marginBottom: -2, transition: 'color 0.15s',
+              }}
+            >
+              {a === 'ia' ? <Bot size={14} /> : <UserCheck size={14} />}
+              {a === 'ia' ? 'Atendente IA' : 'Atendimento ao Cliente'}
+              {naoLidas > 0 && (
+                <span style={{
+                  background: ativo ? MARCA : '#B6C6CD',
+                  color: '#fff', borderRadius: 20,
+                  fontSize: 9.5, fontWeight: 700, padding: '1px 6px',
+                }}>
+                  {naoLidas}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Conteúdo da aba ativa */}
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-      <ListaConversas
-        conversas={conversas}
-        selecionada={selecionada}
-        onSelecionar={selecionar}
-        carregando={carregandoLista}
-      />
-      <JanelaConversa
-        conversa={aberta}
-        mensagens={mensagens}
-        carregando={carregandoConversa}
-        enviando={enviando}
-        erro={erro}
-        onEnviar={aoEnviar}
-        onAssumir={aoAssumir}
-        onDevolver={aoDevolver}
-        painelAberto={painelAberto}
-        onAlternarPainel={alternarPainel}
-      />
-      {painelAberto && aberta && (
-        // A `key` força a remontagem ao trocar de conversa: sem ela, o painel
-        // reaproveitaria o estado anterior e mostraria a foto de quem já saiu.
-        <PainelLead key={aberta.lead_id} leadId={aberta.lead_id} onFechar={alternarPainel} />
-      )}
+
+        {aba === 'ia' && (
+          <>
+            <ListaConversas
+              conversas={conversas}
+              selecionada={selecionada}
+              onSelecionar={selecionarConversa}
+              carregando={carregandoLista}
+            />
+            <JanelaConversa
+              conversa={abertaIA}
+              mensagens={mensagens}
+              carregando={carregandoConversa}
+              enviando={enviando}
+              erro={erro}
+              onEnviar={aoEnviar}
+              onAssumir={aoAssumir}
+              onDevolver={aoDevolver}
+              painelAberto={painelAberto}
+              onAlternarPainel={alternarPainel}
+            />
+            {painelAberto && abertaIA && (
+              <PainelLead key={abertaIA.lead_id} leadId={abertaIA.lead_id} onFechar={alternarPainel} />
+            )}
+          </>
+        )}
+
+        {aba === 'clientes' && (
+          <>
+            <ListaConversasClientes
+              conversas={conversasClientes}
+              selecionada={selecionadaCliente}
+              onSelecionar={selecionarCliente}
+              carregando={carregandoListaClientes}
+            />
+            <JanelaConversaClientes
+              conversa={abertaCliente}
+              mensagens={mensagensCliente}
+              carregando={carregandoConversaCliente}
+              enviando={enviandoCliente}
+              erro={erroCliente}
+              onEnviar={aoEnviarCliente}
+              onAssumir={aoAssumirCliente}
+              onDevolver={aoDevolverCliente}
+              usuarioId={usuarioId}
+              painelAberto={painelClienteAberto}
+              onAlternarPainel={alternarPainelCliente}
+            />
+            {/* Sem PainelLead no canal de clientes — não há lead no CRM de anúncios */}
+          </>
+        )}
       </div>
     </div>
   )

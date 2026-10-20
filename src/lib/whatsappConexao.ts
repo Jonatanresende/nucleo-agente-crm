@@ -343,3 +343,58 @@ export function useConexao(intervaloMs = INTERVALO_PADRAO) {
 
   return { conexao, recarregar, verificando, verificadoEm, intervaloMs, caidaDesde }
 }
+
+// ---------------------------------------------------------------------------
+// Funções de conexão do 2º número (Canal de Atendimento ao Cliente)
+// ---------------------------------------------------------------------------
+
+export async function lerConexaoClientes(): Promise<Conexao> {
+  const cair = (estado: EstadoConexao): Conexao => ({
+    provedor: 'evolution', estado, numero: null, perfil: null, foto: null,
+    servidor: null, instancia: null, chaveFinal: null, webhook: 'desconhecido',
+  })
+
+  try {
+    const r = await comSessao('/clientes/conexao')
+    const d = await r.json()
+    if (!d?.ok) return cair('indisponivel')
+    return {
+      provedor: d.provedor ?? 'evolution',
+      estado: (d.estado ?? 'indisponivel') as EstadoConexao,
+      numero: d.numero ?? null,
+      perfil: d.perfil ?? null,
+      foto: d.foto ?? null,
+      servidor: d.servidor ?? null,
+      instancia: d.instancia ?? null,
+      chaveFinal: d.chaveFinal ?? null,
+      webhook: (d.webhook ?? 'desconhecido') as VeredictoWebhook,
+    }
+  } catch {
+    return cair('indisponivel')
+  }
+}
+
+export async function conectarClientes(
+  numero?: string,
+): Promise<{ codigo: string | null; qr: string | null }> {
+  const r = await comSessao('/clientes/conexao/conectar', {
+    method: 'POST',
+    body: JSON.stringify({ numero: numero ?? '' }),
+  })
+  const d = await r.json()
+  if (!d?.ok) throw new Error(d?.motivo ?? 'falhou')
+  return { codigo: d.codigo ?? null, qr: d.qr ?? null }
+}
+
+export async function desconectarClientes(): Promise<void> {
+  const r = await comSessao('/clientes/conexao/desconectar', { method: 'POST' })
+  const d = await r.json()
+  if (!d?.ok) throw new Error(d?.motivo ?? 'falhou')
+}
+
+export async function apontarWebhookClientes(): Promise<void> {
+  const r = await comSessao('/clientes/conexao/apontar-webhook', { method: 'POST' })
+  const d = await r.json().catch(() => null)
+  if (!d?.ok) throw new Error(d?.motivo ?? 'falhou')
+}
+

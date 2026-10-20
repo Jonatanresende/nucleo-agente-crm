@@ -9,11 +9,22 @@
  *   POST /whatsapp/enviar          envio manual do atendente (sessão)
  *   GET  /whatsapp/prompt-oficial  o prompt publicado, para a tela comparar (sessão)
  *   GET  /whatsapp/foto            foto de perfil de um número (sessão)
+ *   GET  /whatsapp/chaves-ia       quais provedores de IA têm chave (sessão)
  *   GET  /whatsapp/conexao         a conexão está de pé? quem está conectado? (sessão)
  *   POST /whatsapp/conexao/conectar     abre pareamento, devolve código ou QR (sessão)
  *   POST /whatsapp/conexao/desconectar  encerra a sessão do WhatsApp (sessão)
  *   POST /whatsapp/conexao/apontar-webhook  manda a ponte ativa avisar esta função (sessão)
  *   POST /whatsapp/apagar-pessoa   apaga TUDO de uma pessoa, mídia inclusive (sessão)
+ *
+ * ── CANAL DE ATENDIMENTO AO CLIENTE (2º número) ────────────────────────────
+ *   POST /whatsapp/clientes                        webhook do 2º número (segredo próprio)
+ *   POST /whatsapp/clientes/enviar                 envio manual pelo painel (sessão)
+ *   GET  /whatsapp/clientes/conexao                estado da conexão do 2º número (sessão)
+ *   POST /whatsapp/clientes/conexao/conectar       abre pareamento do 2º número (sessão)
+ *   POST /whatsapp/clientes/conexao/desconectar    encerra sessão do 2º número (sessão)
+ *   POST /whatsapp/clientes/conexao/apontar-webhook aponta webhook do 2º número (sessão)
+ *
+ *   ⚠️ NENHUMA DESSAS ROTAS /clientes chama a IA. O canal é puramente humano.
  *
  * PUBLICADA COM `--no-verify-jwt`, igual à `agenda/`: quem chama é a ponte,
  * que não tem sessão do Supabase. A autenticação é nossa. Reimplantar no padrão
@@ -35,6 +46,8 @@ import { montarPrompt, montarFicha, quando } from '../_shared/prompt.ts'
 import { PROMPT_OFICIAL } from '../_shared/prompt-oficial.ts'
 import { ferramentasCom, executar, type Contexto } from '../_shared/ferramentas.ts'
 import { ponteAtiva } from '../_shared/pontes.ts'
+import { criarPonteEvolution } from '../_shared/evolution.ts'
+import { criarPonteUazapi } from '../_shared/uazapi.ts'
 import { avaliarWebhook } from '../_shared/whatsapp.ts'
 import type { MensagemRecebida, Ponte } from '../_shared/whatsapp.ts'
 
@@ -133,6 +146,7 @@ Deno.serve(async (req) => {
   const rota = url.pathname.replace(/^\/whatsapp/, '').replace(/\/+$/, '')
 
   try {
+    // ── Canal IA (comportamento original) ─────────────────────────────────
     if (req.method === 'POST' && rota === '/follow-up') return await rotaFollowUp(req)
     if (req.method === 'POST' && rota === '/enviar') return await rotaEnviar(req)
     if (req.method === 'GET' && rota === '/prompt-oficial') return await rotaPromptOficial(req)
@@ -144,6 +158,15 @@ Deno.serve(async (req) => {
     if (req.method === 'POST' && rota === '/conexao/apontar-webhook') return await rotaApontarWebhook(req)
     if (req.method === 'POST' && rota === '/apagar-pessoa') return await rotaApagarPessoa(req)
     if (req.method === 'POST' && (rota === '' || rota === '/')) return await rotaWebhook(req)
+
+    // ── Canal de Atendimento ao Cliente (2º número, sem IA) ───────────────
+    if (req.method === 'POST' && rota === '/clientes') return await rotaWebhookClientes(req)
+    if (req.method === 'POST' && rota === '/clientes/enviar') return await rotaEnviarClientes(req)
+    if (req.method === 'GET' && rota === '/clientes/conexao') return await rotaConexaoClientes(req)
+    if (req.method === 'POST' && rota === '/clientes/conexao/conectar') return await rotaConectarClientes(req)
+    if (req.method === 'POST' && rota === '/clientes/conexao/desconectar') return await rotaDesconectarClientes(req)
+    if (req.method === 'POST' && rota === '/clientes/conexao/apontar-webhook') return await rotaApontarWebhookClientes(req)
+
     return json({ ok: false, motivo: 'rota_desconhecida' }, 404)
   } catch (e) {
     console.error('erro na entrada:', e)
@@ -1076,6 +1099,308 @@ async function montarHistorico(leadId: string): Promise<MensagemLLM[]> {
 
   return saida.length ? saida : [{ papel: 'user', conteudo: 'oi' }]
 }
+
+// =============================================================================
+// CANAL DE ATENDIMENTO AO CLIENTE — 2º número de WhatsApp, sem IA
+//
+// ⚠️ REGRA ABSOLUTA: nenhuma função aqui chama `conversar`, `montarPrompt`,
+// `ferramentasCom` ou qualquer outro recurso de IA. O canal é exclusivamente
+// humano — a IA nunca deve responder mensagens do 2º número.
+//
+// A ponte do 2º número é lida da coluna `clientes_provedor` em
+// `configuracoes_agente`, que pode ser diferente da ponte do canal IA.
+// =============================================================================
+
+interface ConfigClientes {
+  clientes_chat_ativo: boolean
+  clientes_provedor: string | null
+  clientes_instancia: string | null
+  clientes_webhook_segredo: string | null
+  clientes_boas_vindas_ativo: boolean
+  clientes_boas_vindas_texto: string | null
+}
+
+/** Lê a configuração do canal de clientes do banco. */
+async function configClientes(): Promise<ConfigClientes | null> {
+  const rows = await selecionar<ConfigClientes>(
+    'configuracoes_agente?select=clientes_chat_ativo,clientes_provedor,' +
+    'clientes_instancia,clientes_webhook_segredo,clientes_boas_vindas_ativo,' +
+    'clientes_boas_vindas_texto&limit=1',
+  )
+  return rows[0] ?? null
+}
+
+/**
+ * Monta a ponte do canal de clientes a partir da configuração do banco.
+ *
+/**
+ * Monta a ponte do canal de clientes a partir da configuração do banco e secrets.
+ *
+ * Suporta instâncias e chaves de API independentes para o 2º número
+ * (EVOLUTION_INSTANCIA_CLIENTES e EVOLUTION_API_KEY_CLIENTES), permitindo que
+ * o canal IA e o canal manual de clientes operem de forma 100% isolada.
+ */
+function ponteClientes(cfg: ConfigClientes): Ponte {
+  const provedor = cfg.clientes_provedor ?? 'evolution'
+
+  if (provedor === 'uazapi') {
+    const url = Deno.env.get('UAZAPI_API_URL_CLIENTES') || Deno.env.get('UAZAPI_API_URL')
+    const token = Deno.env.get('UAZAPI_TOKEN_CLIENTES') || Deno.env.get('UAZAPI_TOKEN')
+    return criarPonteUazapi({ urlBase: url, token })
+  }
+
+  // Evolution: URL é a mesma, API key e instância podem ser próprias do 2º número.
+  const url = Deno.env.get('EVOLUTION_API_URL')
+  const chave = Deno.env.get('EVOLUTION_API_KEY_CLIENTES') || Deno.env.get('EVOLUTION_API_KEY')
+  const instancia = Deno.env.get('EVOLUTION_INSTANCIA_CLIENTES') || cfg.clientes_instancia || ''
+  return criarPonteEvolution({ urlBase: url, chave, instancia })
+}
+
+/** Encontra ou cria um contato em clientes_chat. */
+async function acharOuCriarCliente(whatsapp: string): Promise<{ id: string; nome: string | null }> {
+  const achados = await selecionar<{ id: string; nome: string | null }>(
+    `clientes_chat?select=id,nome&whatsapp=eq.${whatsapp}&limit=1`,
+  )
+  if (achados.length) return achados[0]
+
+  const criados = await inserir<{ id: string; nome: string | null }>('clientes_chat', {
+    whatsapp,
+    nome: null,
+    ultimo_contato: new Date().toISOString(),
+  }, true)
+  if (criados.length) return criados[0]
+
+  // Corrida: outra execução criou no meio-tempo.
+  const denovo = await selecionar<{ id: string; nome: string | null }>(
+    `clientes_chat?select=id,nome&whatsapp=eq.${whatsapp}&limit=1`,
+  )
+  return denovo[0]
+}
+
+// ---------------------------------------------------------------------------
+// POST /whatsapp/clientes — webhook do 2º número
+//
+// ⚠️ NÃO CHAMA A IA. Salva a mensagem e opcionalmente envia boas-vindas.
+// ---------------------------------------------------------------------------
+
+async function rotaWebhookClientes(req: Request): Promise<Response> {
+  const cfg = await configClientes()
+
+  // Canal desativado: rejeita o webhook silenciosamente (200 para a ponte
+  // não ficar reenviando, mas sem fazer nada).
+  if (!cfg?.clientes_chat_ativo) {
+    console.log('webhook clientes: canal desativado')
+    return json({ ok: true, ignorado: 'canal_desativado' })
+  }
+
+  // Valida o segredo do 2º número (diferente do segredo do canal IA).
+  const url = new URL(req.url)
+  const enviado = req.headers.get('x-webhook-segredo') ?? url.searchParams.get('segredo') ?? ''
+  const segredo = cfg.clientes_webhook_segredo ?? ''
+  if (!segredo || enviado !== segredo) {
+    return json({ ok: false, motivo: 'nao_autorizado' }, 401)
+  }
+
+  const corpo = await req.json().catch(() => null)
+  if (!corpo) return json({ ok: true, ignorado: 'corpo_invalido' })
+
+  const ponte = ponteClientes(cfg)
+  const lido = ponte.lerWebhook(corpo)
+
+  if (lido.tipo === 'ignorar') {
+    console.log(`webhook clientes ignorado (${ponte.nome}): ${lido.motivo}`)
+    return json({ ok: true, ignorado: lido.motivo })
+  }
+
+  const recebida = lido.mensagem
+  const cliente = await acharOuCriarCliente(recebida.whatsapp)
+
+  const criadas = await inserir<{ id: string }>('mensagens_clientes', {
+    cliente_id: cliente.id,
+    autor: 'cliente',
+    tipo: recebida.tipo,
+    conteudo: recebida.texto,
+    id_externo: recebida.idExterno,
+    lida: false,
+  }, true)
+
+  // Duplicata (id_externo repetido): a ponte reenviou. Já está salvo.
+  if (!criadas.length) return json({ ok: true, ignorado: 'duplicada' })
+
+  // Atualiza último contato
+  await atualizar('clientes_chat', `id=eq.${cliente.id}`, {
+    ultimo_contato: new Date().toISOString(),
+  })
+
+  // Boas-vindas: só na primeira mensagem (quando o cliente acabou de ser criado).
+  // "acabou de ser criado" = a tabela tem exatamente 1 mensagem deste cliente.
+  emSegundoPlano(enviarBoasVindasSeNecessario(cfg, ponte, cliente, recebida.whatsapp))
+
+  return json({ ok: true })
+}
+
+async function enviarBoasVindasSeNecessario(
+  cfg: ConfigClientes,
+  ponte: Ponte,
+  cliente: { id: string },
+  whatsapp: string,
+): Promise<void> {
+  if (!cfg.clientes_boas_vindas_ativo || !cfg.clientes_boas_vindas_texto) return
+
+  // Conta mensagens DESTE cliente — se for a primeira, manda boas-vindas.
+  const total = await selecionar<{ id: string }>(
+    `mensagens_clientes?select=id&cliente_id=eq.${cliente.id}&autor=eq.cliente&limit=2`,
+  )
+  if (total.length !== 1) return  // não é a primeira mensagem
+
+  const texto = cfg.clientes_boas_vindas_texto
+  try {
+    const idExterno = await ponte.enviarTexto(whatsapp, texto)
+    await inserir('mensagens_clientes', {
+      cliente_id: cliente.id,
+      autor: 'atendente',
+      tipo: 'texto',
+      conteudo: texto,
+      id_externo: idExterno,
+      lida: true,
+    }, true)
+    console.log(`boas-vindas enviadas para ${whatsapp}`)
+  } catch (e) {
+    console.error('boas-vindas: erro ao enviar:', e)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /whatsapp/clientes/enviar — atendente envia mensagem pelo painel
+// ---------------------------------------------------------------------------
+
+async function rotaEnviarClientes(req: Request): Promise<Response> {
+  const usuario = await usuarioDaSessao(req)
+  if (!usuario) return json({ ok: false, motivo: 'sem_sessao' }, 401)
+
+  const corpo = await req.json().catch(() => ({}))
+  const clienteId = String(corpo.cliente_id ?? '').trim()
+  const texto = String(corpo.texto ?? '').trim()
+  if (!clienteId || !texto) return json({ ok: false, motivo: 'dados_invalidos' }, 400)
+
+  const clientes = await selecionar<{ whatsapp: string }>(
+    `clientes_chat?select=whatsapp&id=eq.${clienteId}&limit=1`,
+  )
+  const whatsapp = clientes[0]?.whatsapp
+  if (!whatsapp) return json({ ok: false, motivo: 'cliente_sem_whatsapp' }, 400)
+
+  const cfg = await configClientes()
+  if (!cfg?.clientes_chat_ativo) return json({ ok: false, motivo: 'canal_desativado' }, 400)
+
+  const ponte = ponteClientes(cfg)
+  const idExterno = await ponte.enviarTexto(whatsapp, texto)
+
+  await inserir('mensagens_clientes', {
+    cliente_id: clienteId,
+    autor: 'atendente',
+    tipo: 'texto',
+    conteudo: texto,
+    id_externo: idExterno,
+    enviada_por: usuario.id,
+    lida: true,
+  }, true)
+
+  return json({ ok: true })
+}
+
+// ---------------------------------------------------------------------------
+// Rotas de conexão do 2º número — análogas às do canal IA
+// ---------------------------------------------------------------------------
+
+async function rotaConexaoClientes(req: Request): Promise<Response> {
+  const usuario = await usuarioDaSessao(req)
+  if (!usuario) return json({ ok: false, motivo: 'sem_sessao' }, 401)
+
+  const cfg = await configClientes()
+  const ponte = cfg ? ponteClientes(cfg) : null
+  if (!ponte || !ponte.configurada()) return json({ ok: false, motivo: 'nao_configurado' }, 400)
+
+  const NOSSA_URL_CLIENTES = `${URL_SUPABASE}/functions/v1/whatsapp/clientes`
+
+  const [estado, webhookAtual] = await Promise.all([
+    ponte.estadoDaConexao(),
+    ponte.webhook(),
+  ])
+
+  return json({
+    ok: true,
+    provedor: ponte.nome,
+    ...ponte.identificacao(),
+    ...estado,
+    webhook: avaliarWebhook(webhookAtual, NOSSA_URL_CLIENTES),
+  })
+}
+
+async function rotaConectarClientes(req: Request): Promise<Response> {
+  const usuario = await usuarioDaSessao(req)
+  if (!usuario) return json({ ok: false, motivo: 'sem_sessao' }, 401)
+
+  const cfg = await configClientes()
+  const ponte = cfg ? ponteClientes(cfg) : null
+  if (!ponte || !ponte.configurada()) return json({ ok: false, motivo: 'nao_configurado' }, 400)
+
+  const corpo = await req.json().catch(() => ({})) as { numero?: string }
+  const r = await ponte.iniciarConexao(corpo.numero)
+  if (!r) return json({ ok: false, motivo: 'servidor_fora' }, 502)
+  return json({ ok: true, ...r })
+}
+
+async function rotaDesconectarClientes(req: Request): Promise<Response> {
+  const usuario = await usuarioDaSessao(req)
+  if (!usuario) return json({ ok: false, motivo: 'sem_sessao' }, 401)
+
+  const cfg = await configClientes()
+  const ponte = cfg ? ponteClientes(cfg) : null
+  if (!ponte || !ponte.configurada()) return json({ ok: false, motivo: 'nao_configurado' }, 400)
+
+  return (await ponte.desconectar())
+    ? json({ ok: true })
+    : json({ ok: false, motivo: 'servidor_fora' }, 502)
+}
+
+/**
+ * Aponta o webhook do 2º número para a rota /whatsapp/clientes.
+ *
+ * Gera e salva um segredo próprio para o 2º número (separado do segredo do
+ * canal IA). O segredo é gerado aqui e gravado no banco — a tela nunca
+ * precisa preenchê-lo manualmente.
+ */
+async function rotaApontarWebhookClientes(req: Request): Promise<Response> {
+  const usuario = await usuarioDaSessao(req)
+  if (!usuario) return json({ ok: false, motivo: 'sem_sessao' }, 401)
+
+  const cfg = await configClientes()
+  const ponte = cfg ? ponteClientes(cfg) : null
+  if (!ponte || !ponte.configurada()) return json({ ok: false, motivo: 'nao_configurado' }, 400)
+
+  // Gera um segredo novo (ou reutiliza o existente) para o webhook do 2º número.
+  let segredo = cfg?.clientes_webhook_segredo ?? ''
+  if (!segredo) {
+    // Gera 32 bytes aleatórios como segredo hexadecimal.
+    const bytes = new Uint8Array(32)
+    crypto.getRandomValues(bytes)
+    segredo = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+    await atualizar('configuracoes_agente', 'id=gte.0', { clientes_webhook_segredo: segredo })
+  }
+
+  const NOSSA_URL_CLIENTES = `${URL_SUPABASE}/functions/v1/whatsapp/clientes`
+  const aceitou = await ponte.apontarWebhook(NOSSA_URL_CLIENTES, segredo)
+
+  const webhookAtual = avaliarWebhook(await ponte.webhook(), NOSSA_URL_CLIENTES)
+  if (webhookAtual === 'apontado') return json({ ok: true, webhook: webhookAtual })
+
+  console.error(`apontar webhook clientes (${ponte.nome}): aceitou=${aceitou}, leitura=${webhookAtual}`)
+  return json({ ok: false, motivo: aceitou ? 'nao_confirmado' : 'ponte_recusou', webhook: webhookAtual }, 502)
+}
+
+// =============================================================================
+// Fim do bloco do canal de clientes
+// =============================================================================
 
 function json(corpo: unknown, status = 200): Response {
   return new Response(JSON.stringify(corpo), {

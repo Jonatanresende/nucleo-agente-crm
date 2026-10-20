@@ -135,6 +135,41 @@ export default function Sidebar() {
     }
   }, [])
 
+  // ── Contagem de mensagens não lidas nos dois canais (IA + Clientes) ─────────
+  const [naoLidasIA, setNaoLidasIA] = useState(0)
+  const [naoLidasClientes, setNaoLidasClientes] = useState(0)
+
+  useEffect(() => {
+    let vivo = true
+
+    async function atualizarContagens() {
+      try {
+        const [resIA, resClientes] = await Promise.all([
+          supabase.from('mensagens_whatsapp').select('id', { count: 'exact', head: true }).eq('autor', 'lead').eq('lida', false),
+          supabase.from('mensagens_clientes').select('id', { count: 'exact', head: true }).eq('autor', 'cliente').eq('lida', false),
+        ])
+        if (!vivo) return
+        if (!resIA.error && typeof resIA.count === 'number') setNaoLidasIA(resIA.count)
+        if (!resClientes.error && typeof resClientes.count === 'number') setNaoLidasClientes(resClientes.count)
+      } catch {
+        // ignora se tabela ainda não migrada
+      }
+    }
+
+    void atualizarContagens()
+
+    const canal = supabase
+      .channel('sidebar-nao-lidas')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_whatsapp' }, () => { void atualizarContagens() })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mensagens_clientes' }, () => { void atualizarContagens() })
+      .subscribe()
+
+    return () => {
+      vivo = false
+      void supabase.removeChannel(canal)
+    }
+  }, [])
+
   const handleLogout = async () => {
     await supabase.auth.signOut()
     navigate('/login')
@@ -284,18 +319,51 @@ export default function Sidebar() {
             })}
             title={collapsed ? label : undefined}
           >
-            {({ isActive }) => (
-              <>
-                {/* Maior quando recolhido: sem o rótulo ao lado, o ícone é a
-                    única coisa que separa Agenda de Conversas. */}
-                <Icon
-                  size={collapsed ? 22 : 20}
-                  style={{ color: isActive || sobMouse === to ? MARCA : '#6B818C' }}
-                  strokeWidth={isActive ? 2.2 : 1.8}
-                />
-                {!collapsed && <span style={{ whiteSpace: 'nowrap' }}>{label}</span>}
-              </>
-            )}
+            {({ isActive }) => {
+              const totalNaoLidas = to === '/conversas' ? naoLidasIA + naoLidasClientes : 0
+
+              return (
+                <>
+                  <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                    <Icon
+                      size={collapsed ? 22 : 20}
+                      style={{ color: isActive || sobMouse === to ? MARCA : '#6B818C' }}
+                      strokeWidth={isActive ? 2.2 : 1.8}
+                    />
+                    {collapsed && totalNaoLidas > 0 && (
+                      <span style={{
+                        position: 'absolute', top: -3, right: -4,
+                        width: 8, height: 8, borderRadius: '50%',
+                        background: MARCA, border: '2px solid #fff',
+                      }} />
+                    )}
+                  </div>
+
+                  {!collapsed && (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flex: 1, minWidth: 0 }}>
+                      <span style={{ whiteSpace: 'nowrap' }}>{label}</span>
+                      {totalNaoLidas > 0 && (
+                        <span
+                          title={`Atendente IA: ${naoLidasIA} | Clientes: ${naoLidasClientes}`}
+                          style={{
+                            background: isActive ? MARCA : '#8CA0AA',
+                            color: '#fff',
+                            fontSize: 10,
+                            fontWeight: 700,
+                            padding: '1px 6px',
+                            borderRadius: 10,
+                            lineHeight: 1.4,
+                            marginLeft: 'auto',
+                          }}
+                        >
+                          {totalNaoLidas}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </>
+              )
+            }}
           </NavLink>
         ))}
       </nav>
