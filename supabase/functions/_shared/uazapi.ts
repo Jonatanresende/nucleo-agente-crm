@@ -89,38 +89,47 @@ export function lerWebhook(corpo: Record<string, unknown>): Recebimento {
     return { tipo: 'ignorar', motivo: 'formato_desconhecido' }
   }
 
-  if (m.fromMe === true) return { tipo: 'ignorar', motivo: 'propria' }
-  if (m.isGroup === true) return { tipo: 'ignorar', motivo: 'grupo' }
+  // Mensagem que nós mesmos mandamos volta pelo webhook. Sem este corte, a
+  // Letícia responderia a si mesma, para sempre.
+  if (m.fromMe) return { tipo: 'ignorar', motivo: 'propria' }
+
+  // Grupo não é atendimento. E não é hipótese remota: na instância de teste,
+  // 207 das 238 mensagens recebidas eram de grupo.
+  if (m.isGroup || String(m.chatid ?? '').endsWith('@g.us')) {
+    return { tipo: 'ignorar', motivo: 'grupo' }
+  }
+
+  const tipo = TIPOS[String(m.messageType ?? '')]
+  if (!tipo) return { tipo: 'ignorar', motivo: `tipo_${m.messageType ?? 'vazio'}` }
 
   const whatsapp = soDigitos(m.chatid ?? m.sender ?? '')
   if (!whatsapp) return { tipo: 'ignorar', motivo: 'sem_numero' }
 
-  const bruto = m.messageType ?? 'Conversation'
-  const tipo = TIPOS[bruto] ?? 'texto'
-  const texto = m.text ?? null
-
-  const idMensagem = m.messageid ?? m.id ?? null
-  const midia: Midia | null = BAIXAVEIS.has(tipo) ? referencia(m, idMensagem) : null
+  // `messageid` é o id do WhatsApp — o mesmo que a Evolution chama de
+  // `key.id`. O `id` da uazapi vem prefixado com o número da instância, e
+  // mudaria se a clínica trocasse de número.
+  const id = m.messageid ?? m.id ?? null
 
   return {
     tipo: 'mensagem',
     mensagem: {
       whatsapp,
-      idExterno: idMensagem,
+      idExterno: id,
       tipo,
-      texto,
-      midia,
+      texto: (m.text ?? '').trim() || null,
+      midia: BAIXAVEIS.has(tipo) ? referencia(m, id) : null,
     },
   }
 }
 
 /**
- * Monta a referência de mídia para a uazapi.
+ * De onde esta mensagem vai ser baixada.
  *
- * O `fileURL` vazio foi uma surpresa na estreia: sem referência, o `index.ts`
- * não baixava nada, e a Letícia respondia a uma foto que nunca viu. A
- * `content.URL` que vem ao lado não salva — é a CDN do WhatsApp, com o
- * arquivo criptografado pela `mediaKey`.
+ * ⚠️ **O `fileURL` do webhook chega VAZIO**, e foi assim que o áudio e a foto
+ * sumiram na estreia: sem referência, o `index.ts` não baixava nada, e a
+ * Letícia respondia a uma foto que nunca viu. A `content.URL` que vem ao lado
+ * não salva — é a CDN do WhatsApp, com o arquivo criptografado pela
+ * `mediaKey`.
  *
  * O `fileURL` continua sendo preferido porque é uma requisição a menos, e
  * porque um servidor configurado para hospedar a mídia o preenche.

@@ -26,7 +26,7 @@ Documentação completa do schema. Serve para quem baixar este sistema e precisa
 
 ### 1.1. Rodar as migrações
 
-Abra o **SQL Editor** no painel do Supabase e execute os **trinta arquivos,
+Abra o **SQL Editor** no painel do Supabase e execute os **trinta e um arquivos,
 nesta ordem** — cada um depende do anterior:
 
 1. `supabase/migrations/0001_schema_inicial.sql` — 6 tabelas, 1 view, 9 índices,
@@ -207,6 +207,12 @@ nesta ordem** — cada um depende do anterior:
     > arquivo versionado. Quem agenda é `npm run followup:ligar`, que guarda os
     > dois no Vault. Até lá, tudo aqui existe e fica parado.
 
+31. `supabase/migrations/0031_canal_atendimento_clientes.sql` — **canal de atendimento ao cliente (2º número de WhatsApp)**:
+    as tabelas `clientes_chat` e `mensagens_clientes`, a view `clientes_chat_lista`
+    (com `security_invoker`), seis colunas `clientes_*` em `configuracoes_agente`
+    e a publicação Realtime para as duas tabelas. Atendimento manual separado dos leads da IA.
+    Ver [4.21](#421-clientes_chat--mensagens_clientes--clientes_chat_lista-migração-0031).
+
 A ordem importa: cada arquivo depende do anterior. Rodar fora de ordem falha.
 
 Confira o resultado com as consultas da [seção 10](#10-consultas-úteis-para-verificação).
@@ -320,8 +326,11 @@ erDiagram
 | `usuarios` | tabela | Perfil da equipe, espelha `auth.users` |
 | `configuracoes_clinica` | tabela | Identidade, endereço e fuso da empresa (linha única) |
 | `mensagens_whatsapp` | tabela | Cada mensagem trocada no WhatsApp. É a memória do Agente de IA **e** a fonte da tela de conversas (ver 4.17) |
-| `configuracoes_agente` | tabela | Linha única: modelo, prompt, liga/desliga, modo teste e os prazos do follow-up (ver 4.17) |
+| `configuracoes_agente` | tabela | Linha única: modelo, prompt, liga/desliga, modo teste, prazos do follow-up e o canal de clientes (ver 4.17 e 4.21) |
 | `agente_followups` | tabela | Um follow-up enviado, por linha. É o que impede o mesmo toque duas vezes (ver 4.20) |
+| `clientes_chat` | tabela | Cadastro de contatos do 2º número de WhatsApp (canal de clientes, ver 4.21) |
+| `mensagens_clientes` | tabela | Mensagens do 2º número de WhatsApp — atendimento humano, sem IA (ver 4.21) |
+| `clientes_chat_lista` | **view** | Uma linha por contato do canal de clientes, com última mensagem e contador de não lidas (ver 4.21) |
 | `informacoes_clinica_agente` | **view** | Os dados da empresa em frases prontas, uma por linha, para o Agente de IA (ver 4.12) |
 | `procedimentos_clinica_agente` | **view** | Os serviços ativos, um por linha, para o Agente de IA (ver 4.13) |
 | `profissionais_clinica_agente` | **view** | Os profissionais ativos, a jornada e — de quem tem lista — os serviços que fazem, um por linha, para o Agente de IA (ver 4.14) |
@@ -1467,12 +1476,18 @@ Regra do projeto: mudou o `CHECK`, mude `src/types/index.ts` no mesmo commit.
 > `0022` deixou para trás. A seção 3 conta o que isso custou, e a consulta de
 > segurança da seção 10 tem que voltar vazia depois.
 
-> ⚠️ **`horario_comercial` é o horário da empresa; `profissional_horarios` é o
-> que a agenda realmente oferece.** Os dois podem divergir: anunciar até as
-> 18:00 sem nenhum profissional depois das 17:00 faz o agente prometer horário
-> que a consulta de disponibilidade recusa em seguida. A Letícia lê o primeiro para
-> conversar e o segundo para marcar — e não tem como perceber sozinha que os
-> dois discordam.
+#### Colunas do canal de clientes (migração `0031`)
+
+Seis colunas em `configuracoes_agente` que controlam o 2º número de WhatsApp (canal de atendimento humano a clientes):
+
+| Coluna | Tipo | Papel |
+|---|---|---|
+| `clientes_chat_ativo` | `boolean default false` | Liga ou desliga o canal de atendimento ao cliente (2º número) |
+| `clientes_provedor` | `text check in ('evolution', 'uazapi')` | Qual ponte usa o 2º número: evolution ou uazapi (independente da IA) |
+| `clientes_instancia` | `text` | Nome da instância do 2º número na Evolution/uazapi |
+| `clientes_webhook_segredo` | `text` | Segredo do webhook do 2º número. Gerado e gravado pelo sistema |
+| `clientes_boas_vindas_ativo` | `boolean default false` | Se true, envia mensagem automática ao receber a 1ª mensagem de um contato |
+| `clientes_boas_vindas_texto` | `text` | Texto da mensagem de boas-vindas para clientes |
 
 ---
 
@@ -1765,6 +1780,34 @@ do `WEBHOOK_SEGREDO`. Nada de instalação nenhuma entra em arquivo versionado
 `npm run followup:ligar`, que guarda os dois no **Vault** do próprio banco;
 `followup:desligar` tira da agenda e `followup:estado` mostra job, batidas e
 fila.
+
+---
+
+### 4.21. `clientes_chat` · `mensagens_clientes` · `clientes_chat_lista` (migração `0031`)
+
+Canal de atendimento ao cliente (2º número de WhatsApp). Separado da Atendente IA e dos leads de anúncio.
+
+#### Por que tabelas separadas, e não uma coluna "canal"
+
+Os dois públicos têm jornadas completamente diferentes:
+- **Canal IA (`crm_clinica_dados` / `mensagens_whatsapp`)**: leads vindos de anúncios da Meta, têm funil (status), agendamentos de consulta, e a IA atende e preenche a ficha.
+- **Canal Clientes (`clientes_chat` / `mensagens_clientes`)**: clientes existentes da empresa, sem funil, sem IA, puramente troca de mensagens entre o cliente e o atendente humano.
+
+Adicionar uma coluna "canal" em `crm_clinica_dados` causaria colisão de `UNIQUE` no WhatsApp (o mesmo número pode ser lead no 1º número e cliente no 2º) e misturaria as notificações de Realtime das duas caixas de entrada. Tabelas separadas eliminam esses riscos.
+
+| Objeto | O que é |
+|---|---|
+| `clientes_chat` | Contatos que escreveram para o 2º número. Chave `whatsapp` única, `assumido_por` (FK `usuarios`), `assumido_em`, `criado_em` e `ultimo_contato` |
+| `mensagens_clientes` | Mensagens trocadas no 2º número. `autor` restrito a `'cliente'` ou `'atendente'`, `tipo` (`'texto'`, `'audio'`, `'imagem'`, `'video'`, `'documento'`, `'outro'`), `id_externo` UNIQUE (evita duplicatas em reenvio de webhook da ponte) |
+| `clientes_chat_lista` | View com `security_invoker = true`. Uma linha por contato com a última mensagem, autor, data e contador de não lidas (`nao_lidas`) |
+
+#### RLS e permissões
+
+Ambas as tabelas têm Row Level Security ativo com política `"autenticado lê e escreve"` para a role `authenticated`, com grants de `select, insert, update, delete` para `authenticated` e `service_role`. A view `clientes_chat_lista` tem `security_invoker = true` e grant de `select` para `authenticated` e `service_role`.
+
+#### ⚠️ Realtime assina a TABELA, nunca a view
+
+Assim como `crm_clinica`, a view `clientes_chat_lista` não recebe eventos de Realtime diretamente. A aplicação assina as tabelas `public.mensagens_clientes` e `public.clientes_chat`, adicionadas à publicação `supabase_realtime`.
 
 ---
 
@@ -2220,8 +2263,10 @@ inteiro enquanto o Agente de IA marca pelo WhatsApp.
 Para isso funcionar, as tabelas precisam estar publicadas:
 
 ```sql
-alter publication supabase_realtime add table public.crm_clinica_dados;  -- 0001
-alter publication supabase_realtime add table public.consultas;          -- 0002
+alter publication supabase_realtime add table public.crm_clinica_dados;   -- 0001
+alter publication supabase_realtime add table public.consultas;           -- 0002
+alter publication supabase_realtime add table public.mensagens_clientes;  -- 0031
+alter publication supabase_realtime add table public.clientes_chat;       -- 0031
 ```
 
 > A Agenda **recarrega o período** a cada evento em vez de aplicar o payload: o
@@ -2231,17 +2276,17 @@ alter publication supabase_realtime add table public.consultas;          -- 0002
 ### ⚠️ Publique a TABELA, nunca a VIEW
 
 A replicação lógica do Postgres **só funciona com tabelas**. Assinar
-`crm_clinica` (a view) não dá erro — a inscrição é criada normalmente e
+`crm_clinica` ou `clientes_chat_lista` (as views) não dá erro — a inscrição é criada normalmente e
 simplesmente **nunca dispara**. É uma falha silenciosa clássica.
 
 Por isso existe uma assimetria proposital no código:
 
 | Operação | Objeto usado |
 |---|---|
-| `select` / `insert` / `update` / `delete` | `crm_clinica` (a **view**) |
-| Assinatura de Realtime | `crm_clinica_dados` (a **tabela**) |
+| `select` / `insert` / `update` / `delete` | `crm_clinica` / `clientes_chat_lista` (as **views**) |
+| Assinatura de Realtime | `crm_clinica_dados` / `clientes_chat` / `mensagens_clientes` (as **tabelas**) |
 
-Ver [`CRM.tsx`](src/pages/CRM.tsx) e [`LeadDetail.tsx`](src/pages/LeadDetail.tsx).
+Ver [`CRM.tsx`](src/pages/CRM.tsx), [`LeadDetail.tsx`](src/pages/LeadDetail.tsx) e [`Conversas.tsx`](src/pages/Conversas.tsx).
 
 ### Consequência para o payload
 
@@ -2261,9 +2306,11 @@ necessário para ler valores antigos de colunas fora da PK.
 
 ```sql
 select schemaname, tablename from pg_publication_tables
-where pubname = 'supabase_realtime';
--- esperado: public | consultas
+where pubname = 'supabase_realtime' order by 2;
+-- esperado: public | clientes_chat
+--           public | consultas
 --           public | crm_clinica_dados
+--           public | mensagens_clientes
 --           public | mensagens_whatsapp
 ```
 
@@ -2277,9 +2324,9 @@ indicar isso.
 Lista do que quebra este banco de formas não óbvias:
 
 1. **Recriar qualquer view sem `security_invoker = true`** → o RLS deixa de valer.
-   Vale para `crm_clinica` e para as três views do agente (4.12 a 4.14).
-2. **Assinar Realtime na view `crm_clinica`** → a inscrição é criada sem erro e
-   nunca dispara. Assine sempre `crm_clinica_dados` (seção 8.6).
+   Vale para `crm_clinica`, para `clientes_chat_lista` e para as três views do agente (4.12 a 4.14).
+2. **Assinar Realtime na view `crm_clinica` ou `clientes_chat_lista`** → a inscrição é criada sem erro e
+   nunca dispara. Assine sempre `crm_clinica_dados`, `clientes_chat` ou `mensagens_clientes` (seção 8.6).
 3. **Tentar escrever em `minutos_ultima_mensagem`** → erro; é coluna calculada.
 4. **Automação usando a `anon key`** → gravações falham sem erro visível.
 5. **Alterar o `CHECK` de `status` sem atualizar `src/types/index.ts`**
@@ -2340,7 +2387,7 @@ Lista do que quebra este banco de formas não óbvias:
 Depois de rodar a migração, confira se está tudo de pé:
 
 ```sql
--- Objetos criados (esperado: 14 tabelas + 5 views)
+-- Objetos criados (esperado: 16 tabelas + 6 views)
 select table_name, table_type from information_schema.tables
 where table_schema = 'public' order by table_name;
 
@@ -2349,20 +2396,21 @@ select relname from pg_class c
 join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity;
 
--- Políticas (esperado: 25 — 15 em public + 10 em storage)
+-- Políticas (esperado: 27 — 17 em public + 10 em storage)
 --
 -- ⚠️ ESTE É O ÚNICO LUGAR DA DOCUMENTAÇÃO ONDE ESTE NÚMERO É ESCRITO.
 --    Ele já esteve em cinco documentos, com três valores diferentes, e
 --    nenhum era o certo: a `0020` acrescentou duas políticas de DELETE e
 --    ninguém atualizou as cópias. Mexeu nas políticas? Mude AQUI, e só aqui.
---    (A `0030` acrescentou a 15ª, a de leitura de `agente_followups`.)
+--    (A `0030` acrescentou a 15ª, e a `0031` acrescentou a 16ª e 17ª,
+--    de clientes_chat e mensagens_clientes.)
 select schemaname, count(*) from pg_policies
 where schemaname in ('public','storage') group by schemaname;
 
--- Realtime (esperado: as 3 tabelas — assinar a VIEW nunca dispara)
+-- Realtime (esperado: as 5 tabelas — assinar a VIEW nunca dispara)
 select tablename from pg_publication_tables
 where pubname = 'supabase_realtime' order by 1;
--- esperado: consultas, crm_clinica_dados, mensagens_whatsapp
+-- esperado: clientes_chat, consultas, crm_clinica_dados, mensagens_clientes, mensagens_whatsapp
 
 -- Divergência entre o horário anunciado e o que a agenda oferece (armadilha 16)
 select 'clínica' as quem, public.jornada_texto(null) as jornada

@@ -191,6 +191,15 @@ intermediário, e o sistema aceita dois. **Escolha um:**
 > pontes são WhatsApp não oficial, e o WhatsApp pode bloquear o número. Ele é
 > conectado pela tela, na parte 4.
 
+#### 2º número de WhatsApp (Atendimento ao Cliente) — opcional
+
+Se você for utilizar um 2º número de WhatsApp para atendimento manual de clientes (separado do número da IA), as seguintes secrets opcionais podem ser configuradas no Supabase:
+
+- **Evolution**: `EVOLUTION_API_KEY_CLIENTES` e `EVOLUTION_INSTANCIA_CLIENTES`
+- **uazapi**: `UAZAPI_API_URL_CLIENTES` e `UAZAPI_TOKEN_CLIENTES`
+
+> **Sem elas, o canal usa as mesmas credenciais do canal da IA**: se omitidas, o sistema utiliza a mesma URL base, chave e instância configuradas para o canal da IA.
+
 ### 1.5. Invente o segredo do webhook
 
 Não é de site nenhum: **você inventa**. Uma frase longa e aleatória serve.
@@ -260,10 +269,14 @@ WEBHOOK_SEGREDO=            ← o que você inventou
 EVOLUTION_API_URL=          ← 6️⃣ se escolheu Evolution
 EVOLUTION_API_KEY=
 EVOLUTION_INSTANCIA=
+#EVOLUTION_API_KEY_CLIENTES=    opcional (2º número)
+#EVOLUTION_INSTANCIA_CLIENTES=  opcional (2º número)
 
 UAZAPI_API_URL=             ← 6️⃣ se escolheu uazapi
 UAZAPI_TOKEN=
 UAZAPI_ADMIN_TOKEN=             deixe vazio
+#UAZAPI_API_URL_CLIENTES=       opcional (2º número)
+#UAZAPI_TOKEN_CLIENTES=         opcional (2º número)
 ```
 
 > **Este arquivo fica parado, e é de propósito.** Na parte 3 as chaves **sobem**
