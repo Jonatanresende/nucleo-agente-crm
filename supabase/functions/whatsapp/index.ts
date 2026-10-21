@@ -1212,7 +1212,8 @@ async function rotaWebhookClientes(req: Request): Promise<Response> {
   if (!corpo) return json({ ok: true, ignorado: 'corpo_invalido' })
 
   const ponte = ponteClientes(cfg)
-  const lido = ponte.lerWebhook(corpo)
+  // Aqui o que o próprio número manda (digitado no celular) também é atendimento.
+  const lido = ponte.lerWebhook(corpo, { incluirPropria: true })
 
   if (lido.tipo === 'ignorar') {
     console.log(`webhook clientes ignorado (${ponte.nome}): ${lido.motivo}`)
@@ -1224,15 +1225,20 @@ async function rotaWebhookClientes(req: Request): Promise<Response> {
 
   const criadas = await inserir<{ id: string }>('mensagens_clientes', {
     cliente_id: cliente.id,
-    autor: 'cliente',
+    // `propria`: saiu do celular do 2º número, não do painel. Entra como
+    // atendente (já lida). Se veio do painel, o eco cai na duplicata abaixo.
+    autor: recebida.propria ? 'atendente' : 'cliente',
     tipo: recebida.tipo,
     conteudo: recebida.texto,
     id_externo: recebida.idExterno,
-    lida: false,
+    lida: recebida.propria === true,
   }, true)
 
   // Duplicata (id_externo repetido): a ponte reenviou. Já está salvo.
   if (!criadas.length) return json({ ok: true, ignorado: 'duplicada' })
+
+  // Mensagem nossa não dispara boas-vindas nem conta como contato do cliente.
+  if (recebida.propria) return json({ ok: true, propria: true })
 
   // Atualiza último contato
   await atualizar('clientes_chat', `id=eq.${cliente.id}`, {

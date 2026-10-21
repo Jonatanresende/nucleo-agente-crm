@@ -23,7 +23,7 @@
 
 import {
   foraDoAr, soDigitos,
-  type Conexao, type Estado, type Midia, type Ponte, type Recebimento,
+  type Conexao, type Estado, type Midia, type OpcoesLeitura, type Ponte, type Recebimento,
   type WebhookLido,
 } from './whatsapp.ts'
 
@@ -72,7 +72,10 @@ interface MensagemUazapi {
   fileURL?: string
 }
 
-export function lerWebhook(corpo: Record<string, unknown>): Recebimento {
+export function lerWebhook(
+  corpo: Record<string, unknown>,
+  opcoes: OpcoesLeitura = {},
+): Recebimento {
   // O envelope da entrega varia com a versão e com as opções de webhook
   // (`addUrlEvents`, `addUrlTypesMessages`), então procuramos o objeto da
   // mensagem em vez de exigir uma forma. Se um dia ele mudar de lugar de novo,
@@ -91,7 +94,7 @@ export function lerWebhook(corpo: Record<string, unknown>): Recebimento {
 
   // Mensagem que nós mesmos mandamos volta pelo webhook. Sem este corte, a
   // Letícia responderia a si mesma, para sempre.
-  if (m.fromMe) return { tipo: 'ignorar', motivo: 'propria' }
+  if (m.fromMe && !opcoes.incluirPropria) return { tipo: 'ignorar', motivo: 'propria' }
 
   // Grupo não é atendimento. E não é hipótese remota: na instância de teste,
   // 207 das 238 mensagens recebidas eram de grupo.
@@ -118,6 +121,7 @@ export function lerWebhook(corpo: Record<string, unknown>): Recebimento {
       tipo,
       texto: (m.text ?? '').trim() || null,
       midia: BAIXAVEIS.has(tipo) ? referencia(m, id) : null,
+      propria: m.fromMe === true,
     },
   }
 }
