@@ -10,7 +10,7 @@
 
 import {
   foraDoAr, soDigitos,
-  type Conexao, type Estado, type Midia, type Ponte, type Recebimento,
+  type Conexao, type Estado, type Midia, type OpcoesLeitura, type Ponte, type Recebimento,
   type WebhookLido,
 } from './whatsapp.ts'
 
@@ -56,7 +56,10 @@ function leConteudo(dados: Record<string, unknown>): {
   return { tipo: 'texto', texto: texto ?? null, temMidia: false }
 }
 
-export function lerWebhook(corpo: Record<string, unknown>): Recebimento {
+export function lerWebhook(
+  corpo: Record<string, unknown>,
+  opcoes: OpcoesLeitura = {},
+): Recebimento {
   if (corpo.event && String(corpo.event).toUpperCase().replace(/\./g, '_') !== 'MESSAGES_UPSERT') {
     return { tipo: 'ignorar', motivo: `evento_${corpo.event}` }
   }
@@ -68,7 +71,7 @@ export function lerWebhook(corpo: Record<string, unknown>): Recebimento {
   if (!dados || !chave.remoteJid) return { tipo: 'ignorar', motivo: 'formato_desconhecido' }
 
   // Mensagem que nós mesmos mandamos volta pelo webhook.
-  if (chave.fromMe) return { tipo: 'ignorar', motivo: 'propria' }
+  if (chave.fromMe && !opcoes.incluirPropria) return { tipo: 'ignorar', motivo: 'propria' }
 
   // Grupo não é atendimento. Newsletter e status, muito menos.
   if (!chave.remoteJid.endsWith('@s.whatsapp.net')) {
@@ -87,6 +90,7 @@ export function lerWebhook(corpo: Record<string, unknown>): Recebimento {
       tipo: c.tipo,
       texto: c.texto,
       midia: c.temMidia ? { via: 'evolution', mensagem: dados } : null,
+      propria: chave.fromMe === true,
     },
   }
 }

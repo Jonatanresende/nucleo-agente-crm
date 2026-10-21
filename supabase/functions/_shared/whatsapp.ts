@@ -100,6 +100,18 @@ export interface MensagemRecebida {
   texto: string | null
   /** `null` quando não há o que baixar — inclusive em vídeo e documento. */
   midia: Midia | null
+  /**
+   * `true` quando a mensagem saiu do PRÓPRIO número (digitada no celular, no
+   * WhatsApp Web...). Só aparece quando o chamador pede `incluirPropria` —
+   * o canal da IA nunca pede, para a Letícia não responder a si mesma.
+   */
+  propria?: boolean
+}
+
+/** Opções de `lerWebhook`. */
+export interface OpcoesLeitura {
+  /** Em vez de descartar o que o próprio número mandou, devolve marcado como `propria`. */
+  incluirPropria?: boolean
 }
 
 /**
@@ -133,7 +145,7 @@ export interface Ponte {
    * que a pessoa escolheu, não quem vai sentar na cadeira. O caso inteiro está
    * em `acharOuCriarLead`, no `whatsapp/index.ts`.
    */
-  lerWebhook(corpo: Record<string, unknown>): Recebimento
+  lerWebhook(corpo: Record<string, unknown>, opcoes?: OpcoesLeitura): Recebimento
 
   /** "digitando…" no topo da conversa. Cosmético: falhar não pode travar o envio. */
   digitando(numero: string, ms: number): Promise<void>
