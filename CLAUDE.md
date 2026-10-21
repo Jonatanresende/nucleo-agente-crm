@@ -204,7 +204,7 @@ As migrações executáveis ficam em [`supabase/migrations/`](supabase/migration
 e a API do Agente de IA em
 [`supabase/functions/agenda/`](supabase/functions/agenda/).
 
-A migração é aplicada em **trinta arquivos, nesta ordem**:
+A migração é aplicada em **trinta e um arquivos, nesta ordem**:
 `0001_schema_inicial.sql`, `0002_agenda_profissionais.sql` (agenda e
 profissionais), `0003_whatsapp_unico.sql` (WhatsApp normalizado e único),
 `0004_api_agente.sql` (tokens e funções da API),
@@ -248,7 +248,10 @@ cancelar agendamento sem login — ver o ponto 1 e o 3 logo abaixo) e
 `0030_follow_up.sql` (o follow-up automático: `pg_cron` e `pg_net`, os prazos em
 `configuracoes_agente`, a tabela `agente_followups`, a `followups_pendentes()`
 com a política inteira e a `disparar_followups()` que o cron chama — ver a
-seção 4.20 do `DATABASE.md`, e `npm run followup:ligar` para agendar).
+seção 4.20 do `DATABASE.md`, e `npm run followup:ligar` para agendar) e
+`0031_canal_atendimento_clientes.sql` (o canal de atendimento ao cliente para o 2º número de WhatsApp:
+tabelas `clientes_chat` e `mensagens_clientes`, view `clientes_chat_lista`, colunas `clientes_*` em
+`configuracoes_agente` e publicação no Realtime — ver a seção 4.21 do `DATABASE.md`).
 
 > **O conteúdo de nicho não mora nas migrações.** Da `0001` à `0024` elas
 > cadastram o catálogo e o nome da clínica odontológica onde o sistema nasceu;
@@ -370,6 +373,7 @@ src/
 │   ├── telefones.ts            países atendidos, dígitos e formato canônico
 │   ├── contatos.ts             busca de pessoa por WhatsApp (duplicidade)
 │   ├── conversas.ts            ler, enviar, assumir, devolver; e a etiqueta "Agendado"
+│   ├── conversas-clientes.ts   ler, enviar, assumir contatos do canal de clientes (2º número)
 │   ├── baixaConsulta.ts        compareceu ou faltou: a baixa que fecha o funil
 │   ├── whatsappConexao.ts      a ponte está de pé? quem está conectado? (com polling)
 │   ├── apagarPessoa.ts         prever o estrago e apagar tudo de alguém
@@ -390,12 +394,15 @@ src/
 │   ├── NovoAgendamentoModal.tsx  criar agendamento; cria o contato se não existir
 │   ├── CampoTelefone.tsx       seletor de país + contagem de dígitos
 │   ├── TabClinica.tsx          aba "Empresa" de Configurações
+│   ├── TabCanalClientes.tsx    aba "WhatsApp Clientes" de Configurações
 │   ├── SeletorDeCor.tsx        "Cor do sistema", dentro da aba Empresa: o clique mostra, o Salvar grava
 │   ├── EditorProcedimento.tsx  modal de edição de um serviço
 │   ├── PortaDeEntrada.tsx      a porta de entrada (opcional): escolher, deixar de usar, duração e valor
 │   ├── ModalPortal.tsx         leva o modal para o <body> (ver Convenções)
-│   ├── ListaConversas.tsx      coluna esquerda de /conversas
-│   ├── JanelaConversa.tsx      coluna direita: balões, cabeçalho e resposta
+│   ├── ListaConversas.tsx      coluna esquerda de /conversas (aba IA)
+│   ├── JanelaConversa.tsx      coluna direita: balões, cabeçalho e resposta (aba IA)
+│   ├── ListaConversasClientes.tsx coluna esquerda de /conversas (aba Clientes)
+│   ├── JanelaConversaClientes.tsx  coluna direita: balões e resposta (aba Clientes)
 │   ├── PainelLead.tsx          coluna extra: ficha da pessoa (sem o resumo — ver abaixo)
 │   ├── AvisoBaixaConsulta.tsx  "compareceu ou faltou?" — nas 3 telas
 │   ├── AvisoForaDaLista.tsx    "fulano não faz este serviço" — âmbar, nas 3 telas que marcam
@@ -409,7 +416,7 @@ src/
     ├── Login.tsx               tela dividida (marca + formulário)
     ├── Dashboard.tsx           métricas e gráficos — tudo contado no banco (0024)
     ├── CRM.tsx                 Kanban do funil (drag and drop, teto por coluna)
-    ├── Conversas.tsx           o WhatsApp da empresa, em duas colunas
+    ├── Conversas.tsx           o WhatsApp da empresa, com abas para o canal da IA e canal de Clientes
     ├── Agenda.tsx              calendário de todas as agendas + filtros
     ├── Profissionais.tsx       quem atende: nome, cor, jornada e os serviços que faz
     ├── Leads.tsx               invólucro: <PessoasPage mode="leads" />
@@ -418,7 +425,7 @@ src/
     ├── Procedimentos.tsx       o catálogo da empresa (a página Serviços)
     ├── SecretariaIA.tsx        o Agente de IA: modelo, prompt (só leitura), liga/desliga
     ├── TokenApi.tsx            chaves de acesso e o contrato da API
-    └── Configuracoes.tsx       perfil, empresa, horários e o fuso
+    └── Configuracoes.tsx       perfil, empresa, horários, o fuso e o canal do WhatsApp Clientes
 ```
 
 ### A agenda não é uma entidade
@@ -885,7 +892,7 @@ confundirem:
 
 ### Cores dos balões da conversa
 
-Três vozes na tela **Conversas**, e elas precisam ser distinguíveis sem
+Três vozes na tela **Conversas** (aba IA), e elas precisam ser distinguíveis sem
 esforço — principalmente onde uma pessoa entra no lugar da IA.
 
 | Quem | Fundo | Texto | Lado |
@@ -893,6 +900,9 @@ esforço — principalmente onde uma pessoa entra no lugar da IA.
 | Cliente | `#FFFFFF` + borda `#DCE6EA` | `#16232B` | esquerda |
 | Atendente IA | `MARCA` (a cor do sistema) | `#FFFFFF` | direita |
 | Equipe | `#16232B` (Texto) | `#FFFFFF` | direita |
+
+> Na aba **Clientes** (2º número), o canal é puramente humano: só existem duas
+> vozes — Cliente (esquerda) e Equipe (direita). Não há voz da IA.
 
 **As duas cores cheias são as duas cores mais fortes da identidade** — nada de
 cor nova, e o resultado combina com o resto do sistema. A primeira versão usava
@@ -1546,12 +1556,16 @@ cards — não como aba, e não em Configurações.
 
 | Decisão | Por quê |
 |---|---|
-| **Seção, não aba** | A página inteira é um assunto só: a atendente. Aba separa **temas diferentes** (é o caso de Configurações: Perfil, Empresa, Horários). Aba aqui esconderia o estado da conexão, que é justamente o que precisa ser visto sem clicar |
+| **Seção, não aba** | A página inteira é um assunto só: a atendente. Aba separa **temas diferentes** (é o caso de Configurações: Perfil, Empresa, Horários, WhatsApp Clientes). Aba aqui esconderia o estado da conexão, que é justamente o que precisa ser visto sem clicar |
 | **Nome: "Conexão do WhatsApp"** | É o que a coisa é para quem usa. "Evolution API" é nome de fornecedor, e o rótulo teria que mudar junto com ele |
 | **Mas o provedor aparece dentro** | Quando cai, é ele que diz **em qual painel ir olhar**. "WhatsApp desconectado", sozinho, não responde isso |
 | **Servidor, instância e 4 dígitos da chave, dentro dela** | São as perguntas de quando quebra: em qual painel entrar, qual instância é a nossa, e se a chave é a que se pensa que é. Quatro caracteres de trinta e cinco **identificam** sem servir para usar — padrão de cartão e de Stripe |
 | **E o número do WhatsApp, inteiro** | A pergunta mais direta de todas: *é este o número que está atendendo?* Vai completo — a chave manda mensagem por aquele WhatsApp, o número está impresso no cartão da empresa. Cobrir o que já é público não protege nada e custa a conferência. É a única linha do bloco que vem da sessão, e não das secrets; por isso aparece também quando a sessão cai, que é quando o cartão verde some com ela |
 | **Nesta página, não em Configurações** | A conexão é o telefone da atendente. Separar as duas coisas seria esconder de quem cuida dela |
+
+> **E o 2º número (canal de clientes)?** Este mora em **Configurações → WhatsApp Clientes**
+> ([`TabCanalClientes.tsx`](src/components/TabCanalClientes.tsx)). O 2º número é canal
+> de atendimento humano, sem IA; não pertence à página da Atendente IA.
 
 **`desconectado` e `indisponivel` são estados diferentes, e a diferença é a
 saída:** o primeiro é a ponte de pé com a sessão caída (religa na própria
@@ -1666,6 +1680,19 @@ onde a recepção chega sem ter lido nada.
 > A regra vale para o painel inteiro: **ele mostra o que a conversa não mostra**
 > — telefone, serviço de interesse, quando a pessoa chegou, os agendamentos.
 > O que dá para ler rolando a conversa não precisa ser repetido ao lado dela.
+
+### Duas abas em Conversas: IA e Clientes
+
+A tela Conversas ([`Conversas.tsx`](src/pages/Conversas.tsx)) atende dois canais de WhatsApp independentes:
+
+- **Aba IA (Atendente IA)**: mensagens do 1º número (leads de anúncio da Meta), sustentadas por
+  `mensagens_whatsapp` e `conversas_lista`. A IA atende os contatos automaticamente até ser
+  pausada ou assumida por alguém da equipe.
+- **Aba Clientes (WhatsApp Clientes)**: mensagens do 2º número (clientes existentes da clínica),
+  sustentadas por `mensagens_clientes` e `clientes_chat_lista`. Canal puramente manual, sem
+  intervenção da IA, onde a equipe humana conversa diretamente com os clientes.
+
+Cada aba mantém seu próprio estado de seleção, contadores de não lidas e sincronização via Realtime.
 
 ### O aviso de queda é do sistema, e demora um minuto
 
@@ -1977,6 +2004,25 @@ mortas: as colunas `*_chatwoot` de `crm_clinica_dados` e a tabela
 | `configuracoes_clinica` | **só lê** — só o `fuso_horario` |
 
 Nada mais. Detalhes na **seção 8 do [`DATABASE.md`](DATABASE.md)**.
+
+### Rotas do canal de clientes na Edge Function `whatsapp`
+
+O canal de atendimento manual (2º número) usa a mesma função Deno
+[`supabase/functions/whatsapp/`](supabase/functions/whatsapp/), mas com rotas
+dedicadas prefixadas por `/clientes`:
+
+| Rota | Método | Autenticação | Papel |
+|---|---|---|---|
+| `/whatsapp/clientes` | `POST` | `clientes_webhook_segredo` | Webhook do 2º número. Recebe a mensagem, salva em `mensagens_clientes`, atualiza `ultimo_contato` em `clientes_chat` e dispara boas-vindas se for a 1ª mensagem |
+| `/whatsapp/clientes/enviar` | `POST` | Sessão Supabase | Envio manual de texto pelo atendente no painel |
+| `/whatsapp/clientes/conexao` | `GET` | Sessão Supabase | Estado da conexão do 2º número na ponte ativa |
+| `/whatsapp/clientes/conexao/conectar` | `POST` | Sessão Supabase | Inicia pareamento do 2º número (gera QR code ou código) |
+| `/whatsapp/clientes/conexao/desconectar` | `POST` | Sessão Supabase | Encerra a sessão do 2º número na ponte |
+| `/whatsapp/clientes/conexao/apontar-webhook` | `POST` | Sessão Supabase | Configura o webhook do 2º número apontando para a rota `/clientes` |
+
+> ⚠️ **NENHUMA dessas rotas `/clientes` chama a IA.** O canal é puramente humano, não toca em
+> `crm_clinica_dados`, não consulta prompt nem consome tokens de LLM. Responde 200
+> imediatamente se o canal estiver desligado (`clientes_chat_ativo = false`).
 
 > ⚠️ **O lead nasce sem nome, e o `pushName` não entra.** A Evolution manda o
 > nome do perfil do WhatsApp em todo webhook; ele é **ignorado de propósito**. O

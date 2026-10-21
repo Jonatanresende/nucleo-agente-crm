@@ -1139,16 +1139,20 @@ async function configClientes(): Promise<ConfigClientes | null> {
 /**
  * Monta a ponte do canal de clientes a partir da configuração do banco e secrets.
  *
- * Suporta instâncias e chaves de API independentes para o 2º número
- * (EVOLUTION_INSTANCIA_CLIENTES e EVOLUTION_API_KEY_CLIENTES), permitindo que
- * o canal IA e o canal manual de clientes operem de forma 100% isolada.
+ * - Evolution: aceita chave (EVOLUTION_API_KEY) e URL (EVOLUTION_API_URL) da IA como
+ *   padrão se as secrets `_CLIENTES` não existirem, mas a instância NUNCA herda da IA
+ *   (vem de EVOLUTION_INSTANCIA_CLIENTES ou da coluna clientes_instancia no banco).
+ * - uazapi: a URL pode cair em UAZAPI_API_URL, mas o token NUNCA herda da IA.
+ *   Na uazapi o token É a instância: herdar o token conectaria o 2º número ao mesmo
+ *   WhatsApp da IA, misturando as caixas de entrada. Sem UAZAPI_TOKEN_CLIENTES, o token
+ *   fica vazio e a ponte responde como não configurada.
  */
 function ponteClientes(cfg: ConfigClientes): Ponte {
   const provedor = cfg.clientes_provedor ?? 'evolution'
 
   if (provedor === 'uazapi') {
     const url = Deno.env.get('UAZAPI_API_URL_CLIENTES') || Deno.env.get('UAZAPI_API_URL')
-    const token = Deno.env.get('UAZAPI_TOKEN_CLIENTES') || Deno.env.get('UAZAPI_TOKEN')
+    const token = Deno.env.get('UAZAPI_TOKEN_CLIENTES') ?? ''
     return criarPonteUazapi({ urlBase: url, token })
   }
 
