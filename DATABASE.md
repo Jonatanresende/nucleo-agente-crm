@@ -1476,6 +1476,13 @@ Regra do projeto: mudou o `CHECK`, mude `src/types/index.ts` no mesmo commit.
 > `0022` deixou para trás. A seção 3 conta o que isso custou, e a consulta de
 > segurança da seção 10 tem que voltar vazia depois.
 
+> ⚠️ **`horario_comercial` é o horário da empresa; `profissional_horarios` é o
+> que a agenda realmente oferece.** Os dois podem divergir: anunciar até as
+> 18:00 sem nenhum profissional depois das 17:00 faz o agente prometer horário
+> que a consulta de disponibilidade recusa em seguida. A Letícia lê o primeiro para
+> conversar e o segundo para marcar — e não tem como perceber sozinha que os
+> dois discordam.
+
 #### Colunas do canal de clientes (migração `0031`)
 
 Seis colunas em `configuracoes_agente` que controlam o 2º número de WhatsApp (canal de atendimento humano a clientes):

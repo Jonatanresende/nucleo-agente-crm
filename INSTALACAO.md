@@ -193,12 +193,12 @@ intermediário, e o sistema aceita dois. **Escolha um:**
 
 #### 2º número de WhatsApp (Atendimento ao Cliente) — opcional
 
-Se você for utilizar um 2º número de WhatsApp para atendimento manual de clientes (separado do número da IA), as seguintes secrets opcionais podem ser configuradas no Supabase:
+Se você for utilizar um 2º número de WhatsApp para atendimento manual de clientes (separado do número da IA), configure as credenciais da seguinte forma:
 
-- **Evolution**: `EVOLUTION_API_KEY_CLIENTES` e `EVOLUTION_INSTANCIA_CLIENTES`
-- **uazapi**: `UAZAPI_API_URL_CLIENTES` e `UAZAPI_TOKEN_CLIENTES`
+- **Evolution**: a URL e a chave de API caem nas do canal da IA se as secrets `_CLIENTES` não existirem. A instância **NUNCA herda da IA**: preencha o campo "instância" em Configurações → WhatsApp Clientes (ou a secret `EVOLUTION_INSTANCIA_CLIENTES`). Sem ela, o canal aparece como não configurado.
+- **uazapi**: `UAZAPI_TOKEN_CLIENTES` é obrigatório (token próprio), porque na uazapi o token identifica o número da instância. A URL cai em `UAZAPI_API_URL` se `UAZAPI_API_URL_CLIENTES` não existir.
 
-> **Sem elas, o canal usa as mesmas credenciais do canal da IA**: se omitidas, o sistema utiliza a mesma URL base, chave e instância configuradas para o canal da IA.
+> ⚠️ **O 2º número precisa ser DIFERENTE do número da IA.** Conectar ambos ao mesmo número mistura as caixas de entrada dos dois públicos.
 
 ### 1.5. Invente o segredo do webhook
 
@@ -269,14 +269,14 @@ WEBHOOK_SEGREDO=            ← o que você inventou
 EVOLUTION_API_URL=          ← 6️⃣ se escolheu Evolution
 EVOLUTION_API_KEY=
 EVOLUTION_INSTANCIA=
-#EVOLUTION_API_KEY_CLIENTES=    opcional (2º número)
-#EVOLUTION_INSTANCIA_CLIENTES=  opcional (2º número)
+#EVOLUTION_API_KEY_CLIENTES=    opcional (chave própria do 2º número)
+#EVOLUTION_INSTANCIA_CLIENTES=  opcional (instância própria do 2º número)
 
 UAZAPI_API_URL=             ← 6️⃣ se escolheu uazapi
 UAZAPI_TOKEN=
 UAZAPI_ADMIN_TOKEN=             deixe vazio
-#UAZAPI_API_URL_CLIENTES=       opcional (2º número)
-#UAZAPI_TOKEN_CLIENTES=         opcional (2º número)
+#UAZAPI_API_URL_CLIENTES=       opcional (URL própria do 2º número)
+#UAZAPI_TOKEN_CLIENTES=         opcional (token próprio do 2º número)
 ```
 
 > **Este arquivo fica parado, e é de propósito.** Na parte 3 as chaves **sobem**
