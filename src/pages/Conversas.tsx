@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabase'
 import ListaConversas from '../components/ListaConversas'
 import JanelaConversa from '../components/JanelaConversa'
 import PainelLead from '../components/PainelLead'
+import PainelCliente from '../components/PainelCliente'
 import {
   listarConversas, carregarMensagens, enviarMensagem,
   assumirConversa, devolverConversa, marcarComoLidas,
@@ -376,7 +377,9 @@ export default function Conversas() {
               painelAberto={painelClienteAberto}
               onAlternarPainel={alternarPainelCliente}
             />
-            {/* Sem PainelLead no canal de clientes — não há lead no CRM de anúncios */}
+            {painelClienteAberto && abertaCliente && (
+              <PainelCliente key={abertaCliente.cliente_id} conversa={abertaCliente} onFechar={alternarPainelCliente} />
+            )}
           </>
         )}
       </div>
