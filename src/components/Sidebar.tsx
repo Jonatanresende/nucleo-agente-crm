@@ -145,7 +145,7 @@ export default function Sidebar() {
     async function atualizarContagens() {
       try {
         const [resIA, resClientes] = await Promise.all([
-          supabase.from('mensagens_whatsapp').select('id', { count: 'exact', head: true }).eq('autor', 'lead').eq('lida', false),
+          supabase.from('mensagens_whatsapp').select('id', { count: 'exact', head: true }).eq('autor', 'paciente').eq('lida', false),
           supabase.from('mensagens_clientes').select('id', { count: 'exact', head: true }).eq('autor', 'cliente').eq('lida', false),
         ])
         if (!vivo) return

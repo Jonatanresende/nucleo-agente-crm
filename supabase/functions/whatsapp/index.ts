@@ -529,11 +529,14 @@ function instrucaoDeFollowUp(etapa: number, minutos: number, oQueAconteceu: stri
     'Escreva UMA mensagem curta, de no máximo 25 palavras, que:',
     '',
     '-   Retoma de onde a conversa parou, citando o que ELA falou. Se você não',
-    '    tem nada concreto para citar, faça uma pergunta simples sobre o que ela',
-    '    procurava.',
-    '-   Não repete, com outras palavras, o que você já disse na última mensagem.',
+    '    tem nada concreto para citar ou se a conversa parou no início (apenas saudações',
+    '    como "oi"), faça uma pergunta simples e acolhedora sobre como pode ajudar ou',
+    '    o que ela procura.',
+    '-   Não repete, com as mesmas palavras, o que você já disse na última mensagem.',
     '-   Termina com uma pergunta fácil de responder.',
     '',
+    'NUNCA responda apenas com emoji, figurinha ou pontuação. A mensagem deve ser',
+    'obrigatoriamente um texto em português com palavras reais.',
     'Nunca cobre, nunca pressione, e nunca peça desculpa por estar escrevendo.',
     'Nunca diga que ficou esperando, que a mensagem é automática, nem use as',
     'palavras "follow-up", "sistema", "lembrete" ou "retomando".',
@@ -664,6 +667,9 @@ async function mandarFollowUp(pendente: Pendente, reservaId: string): Promise<vo
   // A agente é instruída a mandar uma só; se vier mais, vale a primeira.
   const texto = r.texto.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean)[0] ?? ''
   if (!texto) throw new Error('o modelo devolveu texto vazio')
+  if (!/[a-zA-ZÀ-ÿ0-9]/.test(texto)) {
+    throw new Error(`o modelo devolveu apenas emojis ou símbolos no follow-up: "${texto}"`)
+  }
 
   const ponte = await ponteAtiva()
   const pausa = Math.min(5000, Math.max(1200, texto.length * 22))
@@ -1131,9 +1137,6 @@ async function configClientes(): Promise<ConfigClientes | null> {
 }
 
 /**
- * Monta a ponte do canal de clientes a partir da configuração do banco.
- *
-/**
  * Monta a ponte do canal de clientes a partir da configuração do banco e secrets.
  *
  * Suporta instâncias e chaves de API independentes para o 2º número
@@ -1385,7 +1388,7 @@ async function rotaApontarWebhookClientes(req: Request): Promise<Response> {
     const bytes = new Uint8Array(32)
     crypto.getRandomValues(bytes)
     segredo = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
-    await atualizar('configuracoes_agente', 'id=gte.0', { clientes_webhook_segredo: segredo })
+    await atualizar('configuracoes_agente', 'id=not.is.null', { clientes_webhook_segredo: segredo })
   }
 
   const NOSSA_URL_CLIENTES = `${URL_SUPABASE}/functions/v1/whatsapp/clientes`

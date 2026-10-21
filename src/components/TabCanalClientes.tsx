@@ -58,6 +58,7 @@ export default function TabCanalClientes() {
   const [codigo, setCodigo] = useState<string | null>(null)
   const [qr, setQr] = useState<string | null>(null)
   const [telefoneParear, setTelefoneParear] = useState('')
+  const [configId, setConfigId] = useState<string | null>(null)
 
   const [salvando, setSalvando] = useState(false)
   const [salvo, setSalvo] = useState(false)
@@ -67,11 +68,12 @@ export default function TabCanalClientes() {
   useEffect(() => {
     supabase
       .from('configuracoes_agente')
-      .select('clientes_chat_ativo, clientes_provedor, clientes_instancia, clientes_boas_vindas_ativo, clientes_boas_vindas_texto')
+      .select('id, clientes_chat_ativo, clientes_provedor, clientes_instancia, clientes_boas_vindas_ativo, clientes_boas_vindas_texto')
       .limit(1)
       .maybeSingle()
       .then(({ data }) => {
         if (!data) return
+        setConfigId(data.id)
         setAtivo(Boolean(data.clientes_chat_ativo))
         setProvedor((data.clientes_provedor as 'evolution' | 'uazapi') ?? 'evolution')
         setInstancia(data.clientes_instancia ?? '')
@@ -99,6 +101,11 @@ export default function TabCanalClientes() {
   }, [])
 
   const salvarConfiguracoes = async () => {
+    if (!configId) {
+      setErro('Configuração não encontrada no banco de dados.')
+      return
+    }
+
     setSalvando(true)
     setErro('')
     try {
@@ -111,7 +118,7 @@ export default function TabCanalClientes() {
           clientes_boas_vindas_ativo: boasVindasAtivo,
           clientes_boas_vindas_texto: boasVindasTexto.trim() || null,
         })
-        .gte('id', 0)
+        .eq('id', configId)
 
       if (err) throw err
 
@@ -119,8 +126,8 @@ export default function TabCanalClientes() {
       setTimeout(() => setSalvo(false), 2500)
       // Re-checa conexão com os novos dados
       void checarConexao()
-    } catch (e: any) {
-      setErro(e?.message ?? 'Erro ao salvar configurações do 2º número.')
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : 'Erro ao salvar configurações do 2º número.')
     } finally {
       setSalvando(false)
     }
@@ -134,8 +141,8 @@ export default function TabCanalClientes() {
       setApontou(true)
       setTimeout(() => setApontou(false), 3000)
       await checarConexao()
-    } catch (e: any) {
-      setErro(e?.message ? `Erro ao apontar webhook: ${e.message}` : 'A ponte recusou o apontamento do webhook.')
+    } catch (e) {
+      setErro(e instanceof Error ? `Erro ao apontar webhook: ${e.message}` : 'A ponte recusou o apontamento do webhook.')
     } finally {
       setApontando(false)
     }
@@ -150,7 +157,7 @@ export default function TabCanalClientes() {
       const r = await conectarClientes(telefoneParear)
       setCodigo(r.codigo)
       setQr(r.qr)
-    } catch (e: any) {
+    } catch {
       setErro('Erro ao iniciar pareamento. Verifique se a instância está pronta.')
     } finally {
       setPareando(false)
@@ -163,7 +170,7 @@ export default function TabCanalClientes() {
     try {
       await desconectarClientes()
       await checarConexao()
-    } catch (e: any) {
+    } catch {
       setErro('Erro ao desconectar WhatsApp.')
     } finally {
       setVerificando(false)

@@ -25,7 +25,7 @@
 --   3. `clientes_chat_lista`        — view análoga a `conversas_lista`
 --   4. Campos em `configuracoes_agente` para configurar o 2º número
 --
--- Documentação: ver plano em implementation_plan.md
+-- Documentação: ver CLAUDE.md e DATABASE.md
 -- =============================================================================
 
 
@@ -191,6 +191,13 @@ comment on column public.configuracoes_agente.clientes_boas_vindas_texto is
 
 
 -- =============================================================================
+-- 5. PUBLICAÇÃO REALTIME
+-- =============================================================================
+
+alter publication supabase_realtime add table public.mensagens_clientes, public.clientes_chat;
+
+
+-- =============================================================================
 -- CONFERÊNCIA
 -- =============================================================================
 
@@ -208,3 +215,8 @@ comment on column public.configuracoes_agente.clientes_boas_vindas_texto is
 --    where table_name = 'configuracoes_agente'
 --      and column_name like 'clientes_%'
 --    order by ordinal_position;
+
+-- Publicação Realtime:
+--   select tablename from pg_publication_tables
+--    where pubname = 'supabase_realtime'
+--      and tablename in ('mensagens_clientes', 'clientes_chat');
