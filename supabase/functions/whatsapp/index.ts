@@ -660,7 +660,7 @@ async function mandarFollowUp(pendente: Pendente, reservaId: string): Promise<vo
   const r = await conversar({
     modelo: cfg[0]?.modelo ?? 'gpt-4.1-mini',
     sistema,
-    mensagens: await montarHistorico(lead.id),
+    mensagens: await montarHistoricoParaFollowUp(lead.id),
     ferramentas: [],
   })
 
@@ -1063,6 +1063,24 @@ async function acharOuCriarLead(whatsapp: string): Promise<Lead> {
     `crm_clinica?select=${CAMPOS_LEAD}&whatsapp_lead=eq.${whatsapp}&limit=1`,
   )
   return denovo[0]
+}
+
+/**
+ * O histórico para o follow-up TERMINA COM A AGENTE (a última fala foi dela),
+ * e a Gemini recusa isso com 400 — "single turn requests end with a user role".
+ * Um turno de usuário no fim resolve para todas as ponteiras; o texto só
+ * aponta para a instrução que já está no fim do prompt do sistema.
+ */
+async function montarHistoricoParaFollowUp(leadId: string): Promise<MensagemLLM[]> {
+  const historico = await montarHistorico(leadId)
+  if (historico[historico.length - 1]?.papel === 'user') return historico
+  return [
+    ...historico,
+    {
+      papel: 'user',
+      conteudo: '[Aviso interno: a pessoa não respondeu. Escreva agora a mensagem de retomada, conforme a instrução do final do prompt.]',
+    },
+  ]
 }
 
 /**
