@@ -145,3 +145,30 @@ export async function apagarMidias(caminhos: string[]): Promise<number> {
   if (!r.ok) throw new Error(`storage delete: ${r.status} ${await r.text()}`)
   return caminhos.length
 }
+
+/**
+ * Uma URL assinada, de vida curta, para a ponte ler um arquivo do bucket
+ * privado — é como a Evolution busca o arquivo que vamos mandar.
+ *
+ * A Storage API devolve só o caminho (`/object/sign/...?token=...`), sem o
+ * endereço do projeto nem o `/storage/v1`: quem monta a URL inteira é quem
+ * chama, e é por isso que o prefixo está aqui.
+ *
+ * Dez minutos por padrão: o suficiente para a ponte buscar, curto o bastante
+ * para o link não valer nada se vazar do log.
+ */
+export async function urlAssinada(caminho: string, segundos = 600): Promise<string> {
+  const r = await fetch(`${URL_BASE}/storage/v1/object/sign/midias-whatsapp/${caminho}`, {
+    method: 'POST',
+    headers: CABECALHOS,
+    body: JSON.stringify({ expiresIn: segundos }),
+  })
+  if (!r.ok) throw new Error(`storage sign: ${r.status} ${await r.text()}`)
+
+  const { signedURL } = await r.json() as { signedURL?: string }
+  if (!signedURL) throw new Error('storage sign: a resposta veio sem signedURL')
+
+  return signedURL.startsWith('/storage/v1')
+    ? `${URL_BASE}${signedURL}`
+    : `${URL_BASE}/storage/v1${signedURL}`
+}

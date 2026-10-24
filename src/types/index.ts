@@ -466,6 +466,11 @@ export interface MensagemCliente {
   autor: AutorMensagemCliente
   tipo: TipoMensagem
   conteudo: string | null
+  /** Caminho no bucket privado `midias-whatsapp` (migração 0032). Abrir com signed URL. */
+  midia_url: string | null
+  /** Nome original do arquivo — o que a equipe lê num PDF. */
+  midia_nome: string | null
+  midia_mime: string | null
   id_externo: string | null
   enviada_por: string | null
   lida: boolean

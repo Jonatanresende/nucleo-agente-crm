@@ -9,9 +9,9 @@
  */
 
 import {
-  foraDoAr, soDigitos,
-  type Conexao, type Estado, type Midia, type OpcoesLeitura, type Ponte, type Recebimento,
-  type WebhookLido,
+  foraDoAr, paraBase64, soDigitos,
+  type ArquivoParaEnviar, type Conexao, type Estado, type Midia, type OpcoesLeitura,
+  type Ponte, type Recebimento, type WebhookLido,
 } from './whatsapp.ts'
 
 export type { Conexao, Estado }
@@ -35,25 +35,42 @@ interface InstanciaBruta {
 
 /**
  * O formato do Baileys, que a Evolution repassa cru.
+ *
+ * `todas` liga a referência de vídeo e documento (ver `todasAsMidias`, em
+ * `whatsapp.ts`). Áudio e imagem sempre têm.
  */
-function leConteudo(dados: Record<string, unknown>): {
+function leConteudo(dados: Record<string, unknown>, todas: boolean): {
   tipo: string
   texto: string | null
   temMidia: boolean
+  nomeArquivo: string | null
 } {
-  const m = (dados?.message ?? {}) as Record<string, Record<string, unknown>>
+  const bruta = (dados?.message ?? {}) as Record<string, Record<string, unknown>>
+
+  // Documento com legenda chega embrulhado em outra mensagem. Sem desembrulhar,
+  // ele cairia no `texto` vazio lá embaixo.
+  const m = (bruta.documentWithCaptionMessage?.message ?? bruta) as
+    Record<string, Record<string, unknown>>
 
   const texto = (m.conversation as unknown as string) ??
     (m.extendedTextMessage?.text as string) ??
     (m.imageMessage?.caption as string) ??
-    (m.videoMessage?.caption as string) ?? null
+    (m.videoMessage?.caption as string) ??
+    (m.documentMessage?.caption as string) ?? null
 
-  if (m.audioMessage) return { tipo: 'audio', texto: null, temMidia: true }
-  if (m.imageMessage) return { tipo: 'imagem', texto: texto ?? null, temMidia: true }
-  if (m.videoMessage) return { tipo: 'video', texto: texto ?? null, temMidia: false }
-  if (m.documentMessage) return { tipo: 'documento', texto: texto ?? null, temMidia: false }
+  if (m.audioMessage) return { tipo: 'audio', texto: null, temMidia: true, nomeArquivo: null }
+  if (m.imageMessage) return { tipo: 'imagem', texto: texto ?? null, temMidia: true, nomeArquivo: null }
+  if (m.videoMessage) return { tipo: 'video', texto: texto ?? null, temMidia: todas, nomeArquivo: null }
+  if (m.documentMessage) {
+    return {
+      tipo: 'documento',
+      texto: texto ?? null,
+      temMidia: todas,
+      nomeArquivo: (m.documentMessage.fileName as string) ?? null,
+    }
+  }
 
-  return { tipo: 'texto', texto: texto ?? null, temMidia: false }
+  return { tipo: 'texto', texto: texto ?? null, temMidia: false, nomeArquivo: null }
 }
 
 export function lerWebhook(
@@ -81,7 +98,7 @@ export function lerWebhook(
   const whatsapp = numeroDoJid(chave.remoteJid)
   if (!whatsapp) return { tipo: 'ignorar', motivo: 'sem_numero' }
 
-  const c = leConteudo(dados)
+  const c = leConteudo(dados, opcoes.todasAsMidias === true)
   return {
     tipo: 'mensagem',
     mensagem: {
@@ -90,6 +107,7 @@ export function lerWebhook(
       tipo: c.tipo,
       texto: c.texto,
       midia: c.temMidia ? { via: 'evolution', mensagem: dados } : null,
+      nomeArquivo: c.nomeArquivo,
       propria: chave.fromMe === true,
     },
   }
@@ -155,6 +173,57 @@ export function criarPonteEvolution(opcoes?: OpcoesEvolution): Ponte {
       text: texto,
     })
     return r?.key?.id ?? null
+  }
+
+  /**
+   * Foto, vídeo e documento vão por `message/sendMedia`, com a URL do arquivo
+   * em `media`. Áudio vai por `message/sendWhatsAppAudio`, em base64.
+   *
+   * ⚠️ AS DUAS ROTAS FORAM TESTADAS NA INSTÂNCIA REAL (23/10/2026, Evolution
+   * 2.3.7), e o que o teste ensinou não está na documentação:
+   *
+   *   • `sendMedia` recusa multipart com "Owned media must be a url or base64":
+   *     o campo `media` é texto, URL ou base64, em JSON.
+   *   • `sendMedia` com `mediatype: 'audio'` responde 201 e o WhatsApp NÃO
+   *     entrega. Áudio só chega pela rota própria.
+   *   • Foto por URL e PDF por base64 chegaram. Vídeo ainda não foi testado.
+   *
+   * O áudio é baixado aqui e mandado em base64 porque foi esse o formato
+   * testado — por URL, a rota de áudio nunca foi tentada. Áudio é pequeno; o
+   * custo em memória é de poucos megabytes.
+   */
+  async function enviarMidia(numero: string, arquivo: ArquivoParaEnviar): Promise<string | null> {
+    type Resposta = { key?: { id?: string } }
+
+    if (arquivo.tipo === 'audio') {
+      const r = await fetch(arquivo.url, { signal: AbortSignal.timeout(20_000) })
+      if (!r.ok) throw new Error(`evolution áudio: não consegui ler o arquivo (${r.status})`)
+      const audio = paraBase64(new Uint8Array(await r.arrayBuffer()))
+
+      const resp = await chamar<Resposta>('message/sendWhatsAppAudio', {
+        number: numero,
+        audio,
+        // O navegador grava em webm/opus, e o WhatsApp só toca nota de voz em
+        // ogg/opus. `encoding` manda a Evolution converter (ffmpeg) antes de
+        // enviar; em arquivo que já é ogg, não muda nada.
+        encoding: true,
+      })
+      return resp?.key?.id ?? null
+    }
+
+    const mediatype = arquivo.tipo === 'imagem' ? 'image'
+      : arquivo.tipo === 'video' ? 'video'
+      : 'document'
+
+    const resp = await chamar<Resposta>('message/sendMedia', {
+      number: numero,
+      mediatype,
+      media: arquivo.url,
+      fileName: arquivo.nome,
+      // `undefined` some do JSON: sem legenda, o campo nem vai.
+      caption: arquivo.legenda || undefined,
+    })
+    return resp?.key?.id ?? null
   }
 
   async function baixarMidia(
@@ -287,6 +356,7 @@ export function criarPonteEvolution(opcoes?: OpcoesEvolution): Ponte {
     apontarWebhook,
     digitando,
     enviarTexto,
+    enviarMidia,
     baixarMidia,
     fotoDoPerfil,
     estadoDaConexao,

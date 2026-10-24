@@ -70,6 +70,69 @@ export async function enviarMensagemCliente(clienteId: string, texto: string): P
   if (!r.ok || !dados?.ok) throw new Error(dados?.motivo ?? 'falha_no_envio')
 }
 
+/**
+ * Teto do arquivo enviado pelo painel. Igual ao do recebimento
+ * (`MAX_MIDIA_BYTES` na função): o que passa por um lado passa pelo outro.
+ */
+export const MAX_ARQUIVO_BYTES = 16 * 1024 * 1024
+
+export type TipoDeArquivo = 'imagem' | 'video' | 'documento' | 'audio'
+
+/** Qual dos quatro tipos do WhatsApp é este arquivo. Na dúvida, documento. */
+export function tipoDoArquivo(arquivo: File): TipoDeArquivo {
+  if (arquivo.type.startsWith('image/')) return 'imagem'
+  if (arquivo.type.startsWith('video/')) return 'video'
+  if (arquivo.type.startsWith('audio/')) return 'audio'
+  return 'documento'
+}
+
+/**
+ * Envia um arquivo (com legenda opcional) pelo 2º número.
+ *
+ * Dois passos, de propósito: o navegador sobe o arquivo para o bucket e a
+ * função recebe só a referência. Mandar o arquivo em base64 dentro do JSON
+ * estouraria o limite da requisição muito antes dos 16 MB.
+ *
+ * ⚠️ Se o envio falhar depois do upload, o arquivo fica órfão no bucket — o
+ * bucket não tem política de DELETE para o navegador, de propósito.
+ */
+export async function enviarArquivoCliente(
+  clienteId: string,
+  arquivo: File,
+  legenda: string,
+): Promise<void> {
+  if (arquivo.size > MAX_ARQUIVO_BYTES) throw new Error('arquivo_grande_demais')
+
+  const { data: sessao } = await supabase.auth.getSession()
+  const token = sessao.session?.access_token
+  if (!token) throw new Error('sessão expirada')
+
+  const extensao = /\.([a-z0-9]{1,8})$/i.exec(arquivo.name)?.[1]?.toLowerCase() ?? 'bin'
+  const caminho = `clientes/${clienteId}/${crypto.randomUUID()}.${extensao}`
+  const mime = arquivo.type || 'application/octet-stream'
+
+  const { error: erroUpload } = await supabase.storage
+    .from('midias-whatsapp')
+    .upload(caminho, arquivo, { contentType: mime })
+  if (erroUpload) throw new Error('falha_no_upload')
+
+  const r = await fetch(
+    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp/clientes/enviar`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cliente_id: clienteId,
+        texto: legenda,
+        midia: { caminho, nome: arquivo.name, mime, tipo: tipoDoArquivo(arquivo) },
+      }),
+    },
+  )
+
+  const dados = await r.json().catch(() => null)
+  if (!r.ok || !dados?.ok) throw new Error(dados?.motivo ?? 'falha_no_envio')
+}
+
 // ---------------------------------------------------------------------------
 // Leitura de mensagens
 // ---------------------------------------------------------------------------

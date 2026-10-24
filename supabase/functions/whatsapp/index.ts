@@ -37,7 +37,7 @@
 
 import {
   rpc, selecionar, inserir, atualizar, subirMidia,
-  apagar, listarMidias, apagarMidias,
+  apagar, listarMidias, apagarMidias, urlAssinada,
 } from '../_shared/db.ts'
 import {
   conversar, transcrever, descreverImagem, chavesDeIA, type MensagemLLM,
@@ -49,7 +49,7 @@ import { ponteAtiva } from '../_shared/pontes.ts'
 import { criarPonteEvolution } from '../_shared/evolution.ts'
 import { criarPonteUazapi } from '../_shared/uazapi.ts'
 import { avaliarWebhook } from '../_shared/whatsapp.ts'
-import type { MensagemRecebida, Ponte } from '../_shared/whatsapp.ts'
+import type { ArquivoParaEnviar, MensagemRecebida, Ponte } from '../_shared/whatsapp.ts'
 
 const SEGREDO = Deno.env.get('WEBHOOK_SEGREDO') ?? ''
 const URL_SUPABASE = Deno.env.get('SUPABASE_URL')!
@@ -1230,8 +1230,9 @@ async function rotaWebhookClientes(req: Request): Promise<Response> {
   if (!corpo) return json({ ok: true, ignorado: 'corpo_invalido' })
 
   const ponte = ponteClientes(cfg)
-  // Aqui o que o próprio número manda (digitado no celular) também é atendimento.
-  const lido = ponte.lerWebhook(corpo, { incluirPropria: true })
+  // Aqui o que o próprio número manda (digitado no celular) também é atendimento,
+  // e a equipe vê tudo que chega: vídeo e PDF incluídos (o canal da IA não pede).
+  const lido = ponte.lerWebhook(corpo, { incluirPropria: true, todasAsMidias: true })
 
   if (lido.tipo === 'ignorar') {
     console.log(`webhook clientes ignorado (${ponte.nome}): ${lido.motivo}`)
@@ -1255,6 +1256,11 @@ async function rotaWebhookClientes(req: Request): Promise<Response> {
   // Duplicata (id_externo repetido): a ponte reenviou. Já está salvo.
   if (!criadas.length) return json({ ok: true, ignorado: 'duplicada' })
 
+  // O arquivo, se houver, é baixado e guardado em segundo plano — o webhook não
+  // espera, a ponte reenvia o que demora. Fica ANTES do corte da mensagem
+  // própria: o que sai do celular do 2º número também tem arquivo para guardar.
+  emSegundoPlano(guardarMidiaCliente(ponte, cliente.id, criadas[0].id, recebida))
+
   // Mensagem nossa não dispara boas-vindas nem conta como contato do cliente.
   if (recebida.propria) return json({ ok: true, propria: true })
 
@@ -1268,6 +1274,97 @@ async function rotaWebhookClientes(req: Request): Promise<Response> {
   emSegundoPlano(enviarBoasVindasSeNecessario(cfg, ponte, cliente, recebida.whatsapp))
 
   return json({ ok: true })
+}
+
+/**
+ * Teto do arquivo que guardamos.
+ *
+ * O arquivo passa INTEIRO pela memória da função, em base64: um vídeo grande
+ * derrubaria a execução. 16 MB é um ponto de partida, não uma medição — ajuste
+ * depois de ver o uso real.
+ */
+const MAX_MIDIA_BYTES = 16 * 1024 * 1024
+
+/**
+ * A extensão do arquivo guardado: a do nome original, quando há, e a do tipo
+ * MIME quando não. `mime.split('/')[1]` não serve — um `.docx` viraria uma
+ * extensão de 60 caracteres, e `octet-stream` viraria `.octet-stream`.
+ */
+function extensaoDoArquivo(nome: string | null | undefined, mime: string): string {
+  const doNome = /\.([a-z0-9]{1,8})$/i.exec(nome ?? '')?.[1]
+  if (doNome) return doNome.toLowerCase()
+
+  const MAPA: Record<string, string> = {
+    'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a',
+    'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+    'video/mp4': 'mp4', 'application/pdf': 'pdf',
+  }
+  return MAPA[mime.toLowerCase().split(';')[0].trim()] ?? 'bin'
+}
+
+/**
+ * Baixa o arquivo de uma mensagem do canal de clientes e o guarda no bucket.
+ *
+ * Caminho: `clientes/{cliente_id}/{mensagem_id}.{ext}`. O prefixo `clientes/`
+ * separa estes arquivos dos do canal da IA (`{lead_id}/...`), que a rota de
+ * apagar pessoa varre por prefixo.
+ *
+ * ⚠️ Falha vira texto. Sem isso o balão ficaria vazio e ninguém saberia por
+ * quê — o mesmo princípio do canal da IA, só que aqui quem lê é a equipe.
+ */
+async function guardarMidiaCliente(
+  ponte: Ponte,
+  clienteId: string,
+  mensagemId: string,
+  recebida: MensagemRecebida,
+): Promise<void> {
+  if (!recebida.midia) return
+
+  try {
+    const midia = await ponte.baixarMidia(recebida.midia)
+    if (!midia) throw new Error('o download não devolveu o arquivo')
+
+    const bytes = Uint8Array.from(atob(midia.base64), (c) => c.charCodeAt(0))
+    if (bytes.length > MAX_MIDIA_BYTES) {
+      throw new Error(`arquivo grande demais: ${bytes.length} bytes`)
+    }
+
+    const extensao = extensaoDoArquivo(recebida.nomeArquivo, midia.tipoMime)
+    const caminho = `clientes/${clienteId}/${mensagemId}.${extensao}`
+
+    await subirMidia(caminho, bytes, midia.tipoMime)
+    await atualizar('mensagens_clientes', `id=eq.${mensagemId}`, {
+      midia_url: caminho,
+      midia_nome: recebida.nomeArquivo ?? null,
+      midia_mime: midia.tipoMime,
+    })
+
+    // Áudio do CLIENTE vira texto também, como no canal da IA: a equipe lê o
+    // que foi dito sem precisar ouvir. O player continua no balão, e o texto
+    // vai embaixo. Áudio nosso (`propria`) não é transcrito — é gastar a
+    // transcrição com algo que a equipe acabou de gravar.
+    //
+    // Fica DEPOIS de guardar o arquivo e tem try próprio: falhar a
+    // transcrição não pode jogar fora o áudio, que já está guardado e toca.
+    if (recebida.tipo === 'audio' && !recebida.propria) {
+      try {
+        const texto = await transcrever(bytes, midia.tipoMime)
+        await atualizar('mensagens_clientes', `id=eq.${mensagemId}`, {
+          conteudo: texto ?? '[áudio que não consegui entender]',
+        })
+      } catch (e) {
+        console.error(`transcricao do audio do cliente ${mensagemId}:`, e)
+      }
+    }
+  } catch (e) {
+    console.error(`midia do cliente (${recebida.tipo}) ${mensagemId}:`, e)
+    // A legenda, se houver, é da pessoa e fica. Só preenche quando não há texto.
+    if (!recebida.texto) {
+      await atualizar('mensagens_clientes', `id=eq.${mensagemId}`, {
+        conteudo: '[não consegui baixar este arquivo]',
+      }).catch(() => {})
+    }
+  }
 }
 
 async function enviarBoasVindasSeNecessario(
@@ -1312,7 +1409,10 @@ async function rotaEnviarClientes(req: Request): Promise<Response> {
   const corpo = await req.json().catch(() => ({}))
   const clienteId = String(corpo.cliente_id ?? '').trim()
   const texto = String(corpo.texto ?? '').trim()
-  if (!clienteId || !texto) return json({ ok: false, motivo: 'dados_invalidos' }, 400)
+  // `midia` presente = envio de arquivo, e o `texto` vira a legenda (opcional).
+  // Sem `midia`, o texto é obrigatório — como sempre foi.
+  const midia = corpo.midia as Record<string, unknown> | undefined
+  if (!clienteId || (!texto && !midia)) return json({ ok: false, motivo: 'dados_invalidos' }, 400)
 
   const clientes = await selecionar<{ whatsapp: string }>(
     `clientes_chat?select=whatsapp&id=eq.${clienteId}&limit=1`,
@@ -1324,6 +1424,11 @@ async function rotaEnviarClientes(req: Request): Promise<Response> {
   if (!cfg?.clientes_chat_ativo) return json({ ok: false, motivo: 'canal_desativado' }, 400)
 
   const ponte = ponteClientes(cfg)
+
+  if (midia) {
+    return await enviarArquivoCliente(ponte, whatsapp, clienteId, usuario.id, midia, texto)
+  }
+
   const idExterno = await ponte.enviarTexto(whatsapp, texto)
 
   await inserir('mensagens_clientes', {
@@ -1335,6 +1440,75 @@ async function rotaEnviarClientes(req: Request): Promise<Response> {
     enviada_por: usuario.id,
     lida: true,
   }, true)
+
+  return json({ ok: true })
+}
+
+const TIPOS_DE_ARQUIVO = ['imagem', 'video', 'documento', 'audio'] as const
+
+/**
+ * Manda para o cliente um arquivo que o painel já subiu para o bucket.
+ *
+ * O navegador sobe o arquivo ele mesmo (a política de Storage deixa o usuário
+ * logado gravar) e aqui chega só a REFERÊNCIA: o caminho, o nome e o tipo. É o
+ * que mantém o corpo da requisição pequeno — arquivo em base64 dentro do JSON
+ * estoura o limite da função muito antes dos 16 MB.
+ *
+ * ⚠️ O caminho precisa estar na pasta DESTE cliente. Sem a conferência, quem
+ * tem login poderia mandar para um cliente qualquer arquivo do bucket — inclusive
+ * a foto que outro cliente enviou.
+ */
+async function enviarArquivoCliente(
+  ponte: Ponte,
+  whatsapp: string,
+  clienteId: string,
+  usuarioId: string,
+  midia: Record<string, unknown>,
+  legenda: string,
+): Promise<Response> {
+  const caminho = String(midia.caminho ?? '')
+  const tipo = String(midia.tipo ?? '') as ArquivoParaEnviar['tipo']
+  const nome = String(midia.nome ?? '').trim() || 'arquivo'
+  const mime = String(midia.mime ?? '').trim() || 'application/octet-stream'
+
+  if (!TIPOS_DE_ARQUIVO.includes(tipo)) return json({ ok: false, motivo: 'tipo_invalido' }, 400)
+  if (!caminho.startsWith(`clientes/${clienteId}/`) || caminho.includes('..')) {
+    return json({ ok: false, motivo: 'caminho_invalido' }, 400)
+  }
+
+  let idExterno: string | null
+  try {
+    const url = await urlAssinada(caminho)
+    idExterno = await ponte.enviarMidia(whatsapp, { tipo, url, nome, mime, legenda: legenda || null })
+  } catch (e) {
+    if (e instanceof Error && e.message === 'ponte_sem_envio_de_midia') {
+      return json({ ok: false, motivo: 'ponte_sem_envio_de_midia' }, 501)
+    }
+    console.error(`envio de ${tipo} para o cliente ${clienteId}:`, e)
+    return json({ ok: false, motivo: 'falha_no_envio' }, 502)
+  }
+
+  const campos = { midia_url: caminho, midia_nome: nome, midia_mime: mime }
+  const criadas = await inserir('mensagens_clientes', {
+    cliente_id: clienteId,
+    autor: 'atendente',
+    tipo,
+    conteudo: legenda,
+    id_externo: idExterno,
+    enviada_por: usuarioId,
+    lida: true,
+    ...campos,
+  }, true)
+
+  // Vazio = o eco do webhook chegou antes e já criou a linha, sem o arquivo
+  // (ele é gravado por outro caminho). Completa a linha dele em vez de perder.
+  if (!criadas.length && idExterno) {
+    await atualizar(
+      'mensagens_clientes',
+      `id_externo=eq.${encodeURIComponent(idExterno)}&midia_url=is.null`,
+      { ...campos, enviada_por: usuarioId },
+    ).catch((e) => console.error('completar eco com a mídia enviada:', e))
+  }
 
   return json({ ok: true })
 }
