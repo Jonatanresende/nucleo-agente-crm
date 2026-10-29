@@ -132,6 +132,9 @@ segredo desta instalação:
 npm run followup:ligar      # guarda endereço e segredo no Vault e agenda o cron
 npm run followup:desligar   # tira o cron da agenda; a fila e o histórico ficam
 npm run followup:estado     # o job, as batidas da última hora e a fila de agora
+npm run lembretes:ligar     # agenda o cron dos lembretes de agendamento (24h e reforço)
+npm run lembretes:desligar  # desagenda o cron de lembretes
+npm run lembretes:estado    # batidas e fila de lembretes de agendamento
 ```
 
 E os do Agente de IA (ver [`agente-ia/README.md`](agente-ia/README.md)):
@@ -251,7 +254,10 @@ com a política inteira e a `disparar_followups()` que o cron chama — ver a
 seção 4.20 do `DATABASE.md`, e `npm run followup:ligar` para agendar) e
 `0031_canal_atendimento_clientes.sql` (o canal de atendimento ao cliente para o 2º número de WhatsApp:
 tabelas `clientes_chat` e `mensagens_clientes`, view `clientes_chat_lista`, colunas `clientes_*` em
-`configuracoes_agente` e publicação no Realtime — ver a seção 4.21 do `DATABASE.md`).
+`configuracoes_agente` e publicação no Realtime — ver a seção 4.21 do `DATABASE.md`) e
+`0032_midia_canal_clientes.sql` (mídias no canal de clientes) e
+`0033_lembretes_agendamento.sql` (lembretes automáticos de 24h e reforço horas antes, ferramenta
+`confirmar_agendamento`, etiqueta `Confirmado` no Kanban e follow-up para silêncio e faltas).
 
 > **O conteúdo de nicho não mora nas migrações.** Da `0001` à `0024` elas
 > cadastram o catálogo e o nome da clínica odontológica onde o sistema nasceu;

@@ -72,6 +72,7 @@ interface ConsultaResumo {
   procedimento: string
   data_consulta: string
   status: string
+  confirmado?: boolean | null
   profissional: { nome: string; sobrenome: string } | null
 }
 
@@ -110,7 +111,7 @@ export async function montarFicha(
   fuso: string,
 ): Promise<string> {
   const consultas = await selecionar<ConsultaResumo>(
-    `consultas?select=procedimento,data_consulta,status,profissional:profissionais(nome,sobrenome)` +
+    `consultas?select=procedimento,data_consulta,status,confirmado,profissional:profissionais(nome,sobrenome)` +
     `&lead_id=eq.${leadId}&order=data_consulta.desc&limit=50`,
   )
 
@@ -165,6 +166,13 @@ export async function montarFicha(
       `JÁ TEM AGENDAMENTO MARCADO: ${proxima.procedimento}, ` +
       `${quando(proxima.data_consulta, fuso)}${profissional}.`,
     )
+    if (proxima.confirmado === true) {
+      linhas.push('Presença neste agendamento: JÁ CONFIRMADA pelo contato.')
+    } else {
+      linhas.push(
+        'Presença neste agendamento: AGUARDANDO CONFIRMAÇÃO. Se a pessoa confirmar presença ("vou sim", "confirmado", "estarei aí", etc.), chame a ferramenta `confirmar_agendamento` e agradeça. Se disser que não pode vir ou quiser remarcar, ofereça outros horários com `ver_horarios_livres` e use `remarcar_agendamento` (ou `cancelar_agendamento` se ela insistir em cancelar).',
+      )
+    }
     // A INSTRUÇÃO VIAJA COLADA NO DADO, e não só lá no prompt fixo.
     //
     // Não é redundância: o prompt fixo já proíbe oferecer agendamento a quem

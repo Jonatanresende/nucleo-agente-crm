@@ -258,13 +258,29 @@ function LeadCard({ lead, isDragging = false, overlay = false }: LeadCardProps) 
       </div>
 
       {/* Status badge visual */}
-      <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
+      <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
         {cfg.pulse && (
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: cfg.dot ?? cfg.color, display: 'inline-block', animation: 'pulse-dot 1.4s ease infinite', flexShrink: 0 }} />
         )}
         <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: cfg.bg, color: cfg.color, border: cfg.status === 'consulta_realizada' ? 'none' : `1px solid ${cfg.bg}` }}>
           {cfg.label}
         </span>
+        {lead.status === 'consulta_agendada' && lead.agendamento_confirmado && (
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 3.5,
+            padding: '2px 8px',
+            borderRadius: 20,
+            fontSize: 11,
+            fontWeight: 700,
+            background: '#E8F8EF',
+            color: '#1A7A48',
+            border: '1px solid #B7EBC9',
+          }}>
+            <Check size={11} strokeWidth={2.5} /> Confirmado
+          </span>
+        )}
       </div>
 
       {/* Bottom row: copy badge + time */}

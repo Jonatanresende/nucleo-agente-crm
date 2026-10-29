@@ -102,6 +102,7 @@ const FUSO_PADRAO = 'America/Sao_Paulo'
  * número ser bloqueado.
  */
 const MAX_FOLLOWUPS = 20
+const MAX_LEMBRETES = 20
 
 interface Lead {
   id: string
@@ -148,6 +149,7 @@ Deno.serve(async (req) => {
   try {
     // ── Canal IA (comportamento original) ─────────────────────────────────
     if (req.method === 'POST' && rota === '/follow-up') return await rotaFollowUp(req)
+    if (req.method === 'POST' && rota === '/lembrete') return await rotaLembrete(req)
     if (req.method === 'POST' && rota === '/enviar') return await rotaEnviar(req)
     if (req.method === 'GET' && rota === '/prompt-oficial') return await rotaPromptOficial(req)
     if (req.method === 'GET' && rota === '/foto') return await rotaFoto(req)
@@ -601,10 +603,10 @@ async function oQueAconteceuComOAgendamento(leadId: string, fuso: string): Promi
     return [
       '',
       `Ela tinha ${ultima.procedimento} marcado para ${quando(ultima.data_consulta, fuso)}`,
-      'e não apareceu.',
+      'e não compareceu nem deu retorno.',
       '',
-      'Não cobre a falta, não diga que ela faltou e não peça explicação. Fale',
-      'como quem quer remarcar, e nada mais.',
+      'Pergunte com gentileza e acolhimento o que houve, se aconteceu algum imprevisto,',
+      'e convide a remarcar se ela ainda quiser atendimento.',
     ]
   }
 
@@ -722,6 +724,180 @@ async function mandarFollowUp(pendente: Pendente, reservaId: string): Promise<vo
   }
 
   console.log(`follow-up etapa ${pendente.etapa} enviado para ${lead.id}`)
+}
+
+// ---------------------------------------------------------------------------
+// Lembretes de agendamento (24h e reforço horas antes)
+// ---------------------------------------------------------------------------
+
+interface PendenteLembrete {
+  consulta_id: string
+  lead_id: string
+  whatsapp: string
+  nome: string | null
+  procedimento: string
+  data_consulta: string
+  profissional: string
+  tipo: 'lembrete_24h' | 'reforco_horas_antes'
+}
+
+async function rotaLembrete(req: Request): Promise<Response> {
+  const url = new URL(req.url)
+  const enviado = req.headers.get('x-webhook-segredo') ?? url.searchParams.get('segredo') ?? ''
+  if (!SEGREDO || enviado !== SEGREDO) {
+    return json({ ok: false, motivo: 'nao_autorizado' }, 401)
+  }
+
+  const fila = (await rpc<PendenteLembrete[]>('lembretes_pendentes', {})).slice(0, MAX_LEMBRETES)
+  if (!fila.length) return json({ ok: true, enviados: 0 })
+
+  const reservados: { pendente: PendenteLembrete; reservaId: string }[] = []
+  for (const pendente of fila) {
+    try {
+      const linhas = await inserir<{ id: string }>('agente_lembretes', {
+        consulta_id: pendente.consulta_id,
+        lead_id: pendente.lead_id,
+        tipo: pendente.tipo,
+      })
+      if (linhas.length) reservados.push({ pendente, reservaId: linhas[0].id })
+    } catch (e) {
+      console.error('reservar lembrete:', e)
+    }
+  }
+
+  const trabalho = (async () => {
+    for (const { pendente, reservaId } of reservados) {
+      try {
+        await mandarLembrete(pendente, reservaId)
+      } catch (e) {
+        console.error(`lembrete ${pendente.tipo} de consulta ${pendente.consulta_id}:`, e)
+        await apagar('agente_lembretes', `id=eq.${reservaId}`).catch(() => {})
+      }
+    }
+  })()
+  emSegundoPlano(trabalho)
+
+  return json({ ok: true, enviados: reservados.length })
+}
+
+function instrucaoDeLembrete(pendente: PendenteLembrete, fuso: string): string {
+  const dataFormatada = quando(pendente.data_consulta, fuso)
+  if (pendente.tipo === 'lembrete_24h') {
+    return [
+      '',
+      '',
+      '# AGORA: VOCÊ ESTÁ ENVIANDO UM LEMBRETE DE AGENDAMENTO (24H ANTES)',
+      '',
+      `O contato tem agendamento marcado:`,
+      `- Tipo de consulta / serviço: ${pendente.procedimento}`,
+      `- Data e hora: ${dataFormatada}`,
+      `- Profissional: ${pendente.profissional}`,
+      '',
+      'Escreva UMA mensagem curta, humana, acolhedora e direta (máximo 30 palavras) que:',
+      `1. Mencione claramente o tipo de consulta ("${pendente.procedimento}") e a data/horário exatos (${dataFormatada}).`,
+      '2. Pergunte com simpatia apenas se ela confirma a presença (exemplo: "Tudo certo para você?" ou "Podemos confirmar sua presença?").',
+      '3. NUNCA ofereça mudar, remarcar ou cancelar. Apenas peça a confirmação de presença. Se ela não puder, ela mesma dirá.',
+      '4. Nunca diga que é um robô ou mensagem automática.',
+      '5. ATENÇÃO: Use estritamente esta data e horário fornecidos. NÃO cite remarcações anteriores nem invente outras datas.',
+      '6. Nunca use palavras técnicas nem travessão entre orações.',
+      '',
+      'Responda APENAS com o texto da mensagem final. Não use ferramentas e não divida em várias mensagens.',
+    ].join('\n')
+  } else {
+    return [
+      '',
+      '',
+      '# AGORA: VOCÊ ESTÁ ENVIANDO UM AVISO DE REFORÇO (POUCAS HORAS ANTES)',
+      '',
+      `O contato tem agendamento marcado:`,
+      `- Tipo de consulta / serviço: ${pendente.procedimento}`,
+      `- Horário: ${dataFormatada}`,
+      `- Profissional: ${pendente.profissional}`,
+      'O lembrete de 24h já foi enviado anteriormente, mas a pessoa ainda não confirmou presença.',
+      '',
+      'Escreva UMA mensagem curta, gentil e acolhedora (máximo 25 palavras) que:',
+      `1. Cite a consulta de ${pendente.procedimento} marcada para ${dataFormatada}.`,
+      '2. Pergunte gentilmente apenas se ela confirma a presença (exemplo: "Podemos confirmar sua presença?").',
+      '3. NUNCA ofereça mudar, remarcar ou cancelar. Apenas peça a confirmação de presença.',
+      '4. ATENÇÃO: Use estritamente esta data e horário fornecidos. NÃO cite remarcações anteriores nem invente outras datas.',
+      '5. Não cobre com tom ríspido, seja compreensiva e acolhedora.',
+      '',
+      'Responda APENAS com o texto da mensagem final. Não use ferramentas e não divida em várias mensagens.',
+    ].join('\n')
+  }
+}
+
+async function mandarLembrete(pendente: PendenteLembrete, reservaId: string): Promise<void> {
+  const cAtual = await selecionar<{ status: string; confirmado: boolean | null }>(
+    `consultas?select=status,confirmado&id=eq.${pendente.consulta_id}&limit=1`,
+  )
+  if (!cAtual.length || cAtual[0].status !== 'agendada' || cAtual[0].confirmado === true) {
+    await apagar('agente_lembretes', `id=eq.${reservaId}`)
+    console.log(`lembrete cancelado: consulta ${pendente.consulta_id} não está mais agendada ou já foi confirmada`)
+    return
+  }
+
+  const leads = await selecionar<Lead>(
+    `crm_clinica?select=${CAMPOS_LEAD}&id=eq.${pendente.lead_id}&limit=1`,
+  )
+  const lead = leads[0]
+  if (!lead) throw new Error('lead sumiu entre a fila e o envio do lembrete')
+
+  const cfg = await selecionar<{ modelo: string; prompt: string | null; nome_agente: string }>(
+    'configuracoes_agente?select=modelo,prompt,nome_agente&limit=1',
+  )
+  const clinica = await selecionar<{ fuso_horario: string | null }>(
+    'configuracoes_clinica?select=fuso_horario&limit=1',
+  )
+  const fuso = clinica[0]?.fuso_horario || FUSO_PADRAO
+
+  const ficha = await montarFicha(lead.id, lead, fuso)
+  const sistema = (await montarPrompt(cfg[0]?.prompt, ficha, cfg[0]?.nome_agente)) +
+    instrucaoDeLembrete(pendente, fuso)
+
+  // O lembrete NÃO usa o histórico da conversa. Todos os dados necessários
+  // (procedimento, data, profissional) já estão na instrução dentro de `sistema`.
+  // Passar o histórico confunde o modelo: se houve remarcações anteriores, ele
+  // lê "sua consulta foi remarcada para 02/11" e reproduz isso no texto do
+  // lembrete, mesmo que a consulta atual seja outra.
+  const r = await conversar({
+    modelo: cfg[0]?.modelo ?? 'gpt-4.1-mini',
+    sistema,
+    mensagens: [{ papel: 'user', conteudo: '[Enviar o lembrete agora.]' }],
+    ferramentas: [],
+  })
+
+  const texto = r.texto.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean)[0] ?? ''
+  if (!texto) throw new Error('o modelo devolveu texto vazio para o lembrete')
+  if (!/[a-zA-ZÀ-ÿ0-9]/.test(texto)) {
+    throw new Error(`o modelo devolveu apenas emojis ou símbolos no lembrete: "${texto}"`)
+  }
+
+  const ponte = await ponteAtiva()
+  const pausa = Math.min(5000, Math.max(1200, texto.length * 22))
+  await ponte.digitando(pendente.whatsapp, pausa)
+  await new Promise((espere) => setTimeout(espere, pausa))
+
+  const idExterno = await ponte.enviarTexto(pendente.whatsapp, texto)
+
+  await inserir('mensagens_whatsapp', {
+    lead_id: lead.id,
+    autor: 'agente',
+    tipo: 'texto',
+    conteudo: texto,
+    id_externo: idExterno,
+    lida: true,
+  }, true)
+
+  const agoraIso = new Date().toISOString()
+  if (pendente.tipo === 'lembrete_24h') {
+    await atualizar('consultas', `id=eq.${pendente.consulta_id}`, { lembrete_enviado_em: agoraIso })
+  } else {
+    await atualizar('consultas', `id=eq.${pendente.consulta_id}`, { lembrete_reforco_em: agoraIso })
+  }
+
+  await atualizar('agente_lembretes', `id=eq.${reservaId}`, { texto })
+  console.log(`lembrete ${pendente.tipo} enviado para consulta ${pendente.consulta_id} do lead ${lead.id}`)
 }
 
 // ---------------------------------------------------------------------------
