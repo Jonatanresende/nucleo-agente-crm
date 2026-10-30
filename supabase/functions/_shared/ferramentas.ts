@@ -200,6 +200,24 @@ export const FERRAMENTAS: DefinicaoFerramenta[] = [
     },
   },
   {
+    nome: 'confirmar_agendamento',
+    descricao:
+      'Confirma a presença da pessoa no agendamento já marcado. Use assim ' +
+      'que ela responder confirmando que vai comparecer (ex.: "vou sim", ' +
+      '"confirmado", "com certeza", "estarei aí", "pode confirmar", "ok").',
+    parametros: {
+      type: 'object',
+      properties: {
+        agendamento_id: {
+          type: 'string',
+          description:
+            'Só quando ela tiver MAIS DE UM marcado. Vem de ver_meus_agendamentos.',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     nome: 'detalhes_do_servico',
     descricao:
       'Traz a explicação completa de UM serviço, como a empresa escreveu: ' +
@@ -689,6 +707,33 @@ export async function executar(
           return { ok: false, motivo: r?.motivo, mensagem: RECUSAS[r?.motivo ?? ''] ?? 'Não consegui cancelar.' }
         }
         return { ok: true, cancelado: r.data_hora ? dataHora(r.data_hora, ctx.fuso) : null }
+      }
+
+      case 'confirmar_agendamento': {
+        const alvo = await consultaAlvo(ctx, args.agendamento_id)
+        if ('erro' in alvo) {
+          return {
+            ok: false,
+            motivo: alvo.erro,
+            mensagem: RECUSAS[alvo.erro] ?? 'Não encontrei o agendamento para confirmar.',
+            ...(alvo.agendamentos ? { agendamentos: alvo.agendamentos } : {}),
+          }
+        }
+
+        const agora = new Date().toISOString()
+        await atualizar('consultas', `id=eq.${alvo.id}`, {
+          confirmado: true,
+          confirmado_em: agora,
+        })
+        await atualizar('crm_clinica_dados', `id=eq.${ctx.leadId}`, {
+          agendamento_confirmado: true,
+        })
+
+        return {
+          ok: true,
+          agendamento_id: alvo.id,
+          mensagem: 'Presença confirmada com sucesso.',
+        }
       }
 
       case 'detalhes_do_servico': {

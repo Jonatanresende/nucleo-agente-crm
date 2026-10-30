@@ -182,6 +182,7 @@ export interface LeadClinica {
   agente_pausado: boolean
   assumido_por: string | null
   assumido_em: string | null
+  agendamento_confirmado?: boolean
   created_at: string
 }
 
@@ -215,6 +216,10 @@ export interface Consulta {
   interesse: string | null
   cancelado_em: string | null
   motivo_cancelamento: string | null
+  lembrete_enviado_em?: string | null
+  lembrete_reforco_em?: string | null
+  confirmado?: boolean | null
+  confirmado_em?: string | null
   created_at: string
   updated_at: string
 }
@@ -466,6 +471,11 @@ export interface MensagemCliente {
   autor: AutorMensagemCliente
   tipo: TipoMensagem
   conteudo: string | null
+  /** Caminho no bucket privado `midias-whatsapp` (migração 0032). Abrir com signed URL. */
+  midia_url: string | null
+  /** Nome original do arquivo — o que a equipe lê num PDF. */
+  midia_nome: string | null
+  midia_mime: string | null
   id_externo: string | null
   enviada_por: string | null
   lida: boolean

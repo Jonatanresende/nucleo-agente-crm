@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react'
 import {
   Send, UserCheck, Undo2, MessagesSquare, FileText,
-  PanelRightOpen, PanelRightClose,
+  PanelRightOpen, PanelRightClose, Paperclip, X, Mic, Square,
 } from 'lucide-react'
-import { formatarWhatsapp } from '../lib/conversas-clientes'
+import { formatarWhatsapp, MAX_ARQUIVO_BYTES } from '../lib/conversas-clientes'
 import { hora, diaPorExtenso } from '../lib/conversas'
 import type { ClienteChatResumo, MensagemCliente, AutorMensagemCliente } from '../types'
 import { MARCA, MARCA_SUAVE } from '../lib/marca'
+import MidiaDaMensagem from './MidiaDaMensagem'
 
 /**
  * A janela de chat do canal "Atendimento ao Cliente".
@@ -51,16 +52,34 @@ function Balao({ mensagem, mostrarAutor }: { mensagem: MensagemCliente; mostrarA
         borderBottomRightRadius: doCliente ? 12 : 3,
         fontSize: 13.5, lineHeight: 1.55, wordBreak: 'break-word',
       }}>
-        {mensagem.tipo === 'audio' && (
-          <div style={{ fontSize: 11.5, opacity: 0.75, marginBottom: 4 }}>🎵 Áudio</div>
-        )}
-        {mensagem.tipo === 'imagem' && (
-          <div style={{ fontSize: 11.5, opacity: 0.75, marginBottom: 4 }}>📷 Imagem</div>
-        )}
-        {mensagem.tipo === 'documento' && (
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
-            <FileText size={14} /> Documento
+        {/* Com arquivo guardado (migração 0032): o player, a foto, o vídeo ou o
+            link do documento. Sem ele — mensagem antiga, ou download que
+            falhou —, só o rótulo, como era antes. */}
+        {mensagem.midia_url && mensagem.tipo !== 'texto' ? (
+          <div style={{ marginBottom: mensagem.conteudo ? 7 : 2 }}>
+            <MidiaDaMensagem
+              caminho={mensagem.midia_url}
+              tipo={mensagem.tipo}
+              nome={mensagem.midia_nome}
+            />
           </div>
+        ) : (
+          <>
+            {mensagem.tipo === 'audio' && (
+              <div style={{ fontSize: 11.5, opacity: 0.75, marginBottom: 4 }}>🎵 Áudio</div>
+            )}
+            {mensagem.tipo === 'imagem' && (
+              <div style={{ fontSize: 11.5, opacity: 0.75, marginBottom: 4 }}>📷 Imagem</div>
+            )}
+            {mensagem.tipo === 'video' && (
+              <div style={{ fontSize: 11.5, opacity: 0.75, marginBottom: 4 }}>🎥 Vídeo</div>
+            )}
+            {mensagem.tipo === 'documento' && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
+                <FileText size={14} /> Documento
+              </div>
+            )}
+          </>
         )}
 
         {mensagem.conteudo && (
@@ -78,6 +97,26 @@ function Balao({ mensagem, mostrarAutor }: { mensagem: MensagemCliente; mostrarA
   )
 }
 
+/**
+ * Toca o áudio gravado antes de enviar — ouvir antes é o que evita mandar silêncio.
+ *
+ * ⚠️ A URL nasce DENTRO do efeito, e é gravada direto no elemento. Criada fora
+ * (num useMemo) ela quebrava em desenvolvimento: o React monta, desmonta e
+ * monta de novo, o cleanup da primeira montagem revogava a URL, e a segunda
+ * reaproveitava a já revogada — `ERR_FILE_NOT_FOUND`, e o player mudo.
+ */
+function PreviaDoAudio({ arquivo }: { arquivo: File }) {
+  const player = useRef<HTMLAudioElement | null>(null)
+
+  useEffect(() => {
+    const url = URL.createObjectURL(arquivo)
+    if (player.current) player.current.src = url
+    return () => URL.revokeObjectURL(url)
+  }, [arquivo])
+
+  return <audio ref={player} controls style={{ height: 28, maxWidth: 200 }} />
+}
+
 interface Props {
   conversa: ClienteChatResumo | null
   mensagens: MensagemCliente[]
@@ -85,6 +124,8 @@ interface Props {
   enviando: boolean
   erro: string
   onEnviar: (texto: string) => void
+  /** Devolve true quando saiu — só então o anexo é limpo da caixa. */
+  onEnviarArquivo: (arquivo: File, legenda: string) => Promise<boolean>
   onAssumir: () => void
   onDevolver: () => void
   usuarioId: string | null
@@ -94,10 +135,29 @@ interface Props {
 
 export default function JanelaConversaClientes({
   conversa, mensagens, carregando, enviando, erro,
-  onEnviar, onAssumir, onDevolver, usuarioId,
+  onEnviar, onEnviarArquivo, onAssumir, onDevolver, usuarioId,
   painelAberto, onAlternarPainel,
 }: Props) {
   const [texto, setTexto] = useState('')
+  const [anexo, setAnexo] = useState<File | null>(null)
+  const [erroAnexo, setErroAnexo] = useState('')
+  const seletor = useRef<HTMLInputElement | null>(null)
+
+  // Gravação de áudio pelo microfone do navegador.
+  const [gravando, setGravando] = useState(false)
+  const [segundos, setSegundos] = useState(0)
+  const gravador = useRef<MediaRecorder | null>(null)
+  const pedacos = useRef<Blob[]>([])
+  const relogio = useRef<number | null>(null)
+  const descartar = useRef(false)
+
+  // Trocar de conversa (o componente remonta) ou sair da tela solta o microfone.
+  useEffect(() => () => {
+    descartar.current = true
+    if (relogio.current) window.clearInterval(relogio.current)
+    gravador.current?.stream.getTracks().forEach((t) => t.stop())
+    if (gravador.current?.state === 'recording') gravador.current.stop()
+  }, [])
   const fim = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -126,12 +186,81 @@ export default function JanelaConversaClientes({
   const assumidaPorMim = conversa.assumido_por === usuarioId && !!usuarioId
   const assumidaPorOutrem = !!conversa.assumido_por && !assumidaPorMim
 
-  function enviar() {
+  function escolherArquivo(e: React.ChangeEvent<HTMLInputElement>) {
+    const arquivo = e.target.files?.[0] ?? null
+    e.target.value = ''  // permite escolher o mesmo arquivo de novo
+    if (!arquivo) return
+    if (arquivo.size > MAX_ARQUIVO_BYTES) {
+      setErroAnexo(`"${arquivo.name}" passa de 16 MB.`)
+      return
+    }
+    setErroAnexo('')
+    setAnexo(arquivo)
+  }
+
+  async function comecarGravacao() {
+    setErroAnexo('')
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setErroAnexo('Este navegador não grava áudio.')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // ogg/opus onde o navegador sabe (Firefox); webm/opus no Chrome e Edge.
+      const formato = ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus', 'audio/webm']
+        .find((f) => MediaRecorder.isTypeSupported(f))
+      const rec = new MediaRecorder(stream, formato ? { mimeType: formato } : undefined)
+
+      pedacos.current = []
+      descartar.current = false
+      rec.ondataavailable = (e) => { if (e.data.size) pedacos.current.push(e.data) }
+      rec.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop())
+        if (relogio.current) window.clearInterval(relogio.current)
+        setGravando(false)
+        if (descartar.current || !pedacos.current.length) return
+
+        const tipo = (rec.mimeType || 'audio/webm').split(';')[0]
+        const ext = tipo.includes('ogg') ? 'ogg' : 'webm'
+        const arquivo = new File(pedacos.current, `audio-${Date.now()}.${ext}`, { type: tipo })
+        if (arquivo.size > MAX_ARQUIVO_BYTES) { setErroAnexo('A gravação passa de 16 MB.'); return }
+        setAnexo(arquivo)
+      }
+
+      gravador.current = rec
+      rec.start()
+      setSegundos(0)
+      setGravando(true)
+      relogio.current = window.setInterval(() => setSegundos((s) => s + 1), 1000)
+    } catch {
+      setErroAnexo('Não consegui usar o microfone. Libere a permissão no navegador.')
+    }
+  }
+
+  function pararGravacao(guardar: boolean) {
+    descartar.current = !guardar
+    gravador.current?.stop()
+  }
+
+  const relogioTexto = `${Math.floor(segundos / 60)}:${String(segundos % 60).padStart(2, '0')}`
+
+  async function enviar() {
+    if (enviando) return
     const limpo = texto.trim()
-    if (!limpo || enviando) return
+
+    if (anexo) {
+      // O texto vira a legenda. Só limpa se o envio deu certo: falhou, a
+      // pessoa tenta de novo sem redigitar nem reanexar.
+      if (await onEnviarArquivo(anexo, limpo)) { setAnexo(null); setTexto('') }
+      return
+    }
+
+    if (!limpo) return
     onEnviar(limpo)
     setTexto('')
   }
+
+  const podeEnviar = !enviando && !gravando && (!!anexo || !!texto.trim())
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, height: '100%' }}>
@@ -250,16 +379,78 @@ export default function JanelaConversaClientes({
 
       {/* Caixa de resposta — sempre habilitada (sem necessidade de assumir) */}
       <div style={{ borderTop: '1px solid #DCE6EA', background: '#fff', padding: '12px 20px', flexShrink: 0 }}>
-        {erro && (
+        {(erro || erroAnexo) && (
           <div style={{
             marginBottom: 9, padding: '8px 12px', background: '#FEF2F2',
             border: '1px solid #FECACA', borderRadius: 8, fontSize: 12, color: '#DC2626',
           }}>
-            {erro}
+            {erroAnexo || erro}
+          </div>
+        )}
+
+        {anexo && (
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 7, marginBottom: 9,
+            padding: '6px 8px 6px 10px', background: MARCA_SUAVE, color: MARCA,
+            borderRadius: 8, fontSize: 12.5, fontWeight: 600, maxWidth: '100%',
+          }}>
+            <FileText size={13} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {anexo.name}
+            </span>
+            {anexo.type.startsWith('audio/') && <PreviaDoAudio arquivo={anexo} />}
+            <button onClick={() => setAnexo(null)} disabled={enviando} title="Tirar o arquivo"
+              style={{
+                display: 'flex', border: 'none', background: 'transparent', padding: 2,
+                cursor: enviando ? 'not-allowed' : 'pointer', color: MARCA,
+              }}>
+              <X size={13} />
+            </button>
           </div>
         )}
 
         <div style={{ display: 'flex', gap: 9, alignItems: 'flex-end' }}>
+          <input ref={seletor} type="file" onChange={escolherArquivo} style={{ display: 'none' }}
+            accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" />
+          <button onClick={() => seletor.current?.click()} disabled={enviando}
+            title="Anexar imagem, vídeo, áudio ou documento"
+            style={{
+              display: 'flex', alignItems: 'center', padding: 11, borderRadius: 10,
+              border: '1px solid #DCE6EA', background: '#fff', color: '#6B818C',
+              cursor: enviando ? 'not-allowed' : 'pointer', flexShrink: 0,
+            }}>
+            <Paperclip size={15} />
+          </button>
+          {gravando ? (
+            <>
+              <button onClick={() => pararGravacao(false)} title="Cancelar a gravação"
+                style={{
+                  display: 'flex', alignItems: 'center', padding: 11, borderRadius: 10,
+                  border: '1px solid #DCE6EA', background: '#fff', color: '#6B818C',
+                  cursor: 'pointer', flexShrink: 0,
+                }}>
+                <X size={15} />
+              </button>
+              <button onClick={() => pararGravacao(true)} title="Parar e guardar a gravação"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 7, padding: '11px 14px',
+                  borderRadius: 10, border: 'none', background: '#DC2626', color: '#fff',
+                  cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: FONTE, flexShrink: 0,
+                }}>
+                <Square size={13} /> Gravando {relogioTexto}
+              </button>
+            </>
+          ) : (
+            <button onClick={comecarGravacao} disabled={enviando || !!anexo}
+              title="Gravar um áudio"
+              style={{
+                display: 'flex', alignItems: 'center', padding: 11, borderRadius: 10,
+                border: '1px solid #DCE6EA', background: '#fff', color: '#6B818C',
+                cursor: enviando || anexo ? 'not-allowed' : 'pointer', flexShrink: 0,
+              }}>
+              <Mic size={15} />
+            </button>
+          )}
           <textarea
             value={texto}
             onChange={(e) => setTexto(e.target.value)}
@@ -267,7 +458,7 @@ export default function JanelaConversaClientes({
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); enviar() }
             }}
             rows={1}
-            placeholder="Escreva a mensagem… (Enter envia, Shift+Enter quebra a linha)"
+            placeholder={anexo ? 'Legenda (opcional)…' : 'Escreva a mensagem… (Enter envia, Shift+Enter quebra a linha)'}
             style={{
               flex: 1, padding: '10px 13px', borderRadius: 10, border: '1px solid #DCE6EA',
               fontSize: 13.5, fontFamily: FONTE, color: '#16232B', outline: 'none',
@@ -279,12 +470,12 @@ export default function JanelaConversaClientes({
           />
           <button
             onClick={enviar}
-            disabled={enviando || !texto.trim()}
+            disabled={!podeEnviar}
             style={{
               display: 'flex', alignItems: 'center', gap: 6, padding: '10px 17px',
               borderRadius: 10, border: 'none',
-              background: enviando || !texto.trim() ? '#B6C6CD' : MARCA,
-              color: '#fff', cursor: enviando || !texto.trim() ? 'not-allowed' : 'pointer',
+              background: !podeEnviar ? '#B6C6CD' : MARCA,
+              color: '#fff', cursor: !podeEnviar ? 'not-allowed' : 'pointer',
               fontSize: 13, fontWeight: 600, fontFamily: FONTE, flexShrink: 0,
             }}>
             <Send size={14} /> {enviando ? 'Enviando…' : 'Enviar'}

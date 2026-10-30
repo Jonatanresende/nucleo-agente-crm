@@ -103,7 +103,11 @@ function NewConsultaModal({ leadId, profissionais, onClose, onSaved }: { leadId:
       lead_id: leadId,
       profissional_id: form.profissional_id || null,
       procedimento: form.procedimento.trim(),
-      data_consulta: form.data_consulta,
+      // `datetime-local` devolve "2026-10-30T14:35" sem fuso horário.
+      // Sem conversão, o banco interpreta como UTC e exibe -3h (11:35).
+      // `new Date()` aplica o offset local antes de virar ISO — igual ao
+      // que NovoAgendamentoModal já faz com `inicio.toISOString()`.
+      data_consulta: new Date(form.data_consulta).toISOString(),
       duracao_minutos: Number(form.duracao_minutos),
       status: form.status,
       origem: 'equipe',

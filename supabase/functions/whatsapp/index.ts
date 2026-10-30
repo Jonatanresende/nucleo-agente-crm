@@ -37,7 +37,7 @@
 
 import {
   rpc, selecionar, inserir, atualizar, subirMidia,
-  apagar, listarMidias, apagarMidias,
+  apagar, listarMidias, apagarMidias, urlAssinada,
 } from '../_shared/db.ts'
 import {
   conversar, transcrever, descreverImagem, chavesDeIA, type MensagemLLM,
@@ -49,7 +49,7 @@ import { ponteAtiva } from '../_shared/pontes.ts'
 import { criarPonteEvolution } from '../_shared/evolution.ts'
 import { criarPonteUazapi } from '../_shared/uazapi.ts'
 import { avaliarWebhook } from '../_shared/whatsapp.ts'
-import type { MensagemRecebida, Ponte } from '../_shared/whatsapp.ts'
+import type { ArquivoParaEnviar, MensagemRecebida, Ponte } from '../_shared/whatsapp.ts'
 
 const SEGREDO = Deno.env.get('WEBHOOK_SEGREDO') ?? ''
 const URL_SUPABASE = Deno.env.get('SUPABASE_URL')!
@@ -102,6 +102,7 @@ const FUSO_PADRAO = 'America/Sao_Paulo'
  * número ser bloqueado.
  */
 const MAX_FOLLOWUPS = 20
+const MAX_LEMBRETES = 20
 
 interface Lead {
   id: string
@@ -148,6 +149,7 @@ Deno.serve(async (req) => {
   try {
     // ── Canal IA (comportamento original) ─────────────────────────────────
     if (req.method === 'POST' && rota === '/follow-up') return await rotaFollowUp(req)
+    if (req.method === 'POST' && rota === '/lembrete') return await rotaLembrete(req)
     if (req.method === 'POST' && rota === '/enviar') return await rotaEnviar(req)
     if (req.method === 'GET' && rota === '/prompt-oficial') return await rotaPromptOficial(req)
     if (req.method === 'GET' && rota === '/foto') return await rotaFoto(req)
@@ -601,10 +603,10 @@ async function oQueAconteceuComOAgendamento(leadId: string, fuso: string): Promi
     return [
       '',
       `Ela tinha ${ultima.procedimento} marcado para ${quando(ultima.data_consulta, fuso)}`,
-      'e não apareceu.',
+      'e não compareceu nem deu retorno.',
       '',
-      'Não cobre a falta, não diga que ela faltou e não peça explicação. Fale',
-      'como quem quer remarcar, e nada mais.',
+      'Pergunte com gentileza e acolhimento o que houve, se aconteceu algum imprevisto,',
+      'e convide a remarcar se ela ainda quiser atendimento.',
     ]
   }
 
@@ -660,7 +662,7 @@ async function mandarFollowUp(pendente: Pendente, reservaId: string): Promise<vo
   const r = await conversar({
     modelo: cfg[0]?.modelo ?? 'gpt-4.1-mini',
     sistema,
-    mensagens: await montarHistorico(lead.id),
+    mensagens: await montarHistoricoParaFollowUp(lead.id),
     ferramentas: [],
   })
 
@@ -722,6 +724,180 @@ async function mandarFollowUp(pendente: Pendente, reservaId: string): Promise<vo
   }
 
   console.log(`follow-up etapa ${pendente.etapa} enviado para ${lead.id}`)
+}
+
+// ---------------------------------------------------------------------------
+// Lembretes de agendamento (24h e reforço horas antes)
+// ---------------------------------------------------------------------------
+
+interface PendenteLembrete {
+  consulta_id: string
+  lead_id: string
+  whatsapp: string
+  nome: string | null
+  procedimento: string
+  data_consulta: string
+  profissional: string
+  tipo: 'lembrete_24h' | 'reforco_horas_antes'
+}
+
+async function rotaLembrete(req: Request): Promise<Response> {
+  const url = new URL(req.url)
+  const enviado = req.headers.get('x-webhook-segredo') ?? url.searchParams.get('segredo') ?? ''
+  if (!SEGREDO || enviado !== SEGREDO) {
+    return json({ ok: false, motivo: 'nao_autorizado' }, 401)
+  }
+
+  const fila = (await rpc<PendenteLembrete[]>('lembretes_pendentes', {})).slice(0, MAX_LEMBRETES)
+  if (!fila.length) return json({ ok: true, enviados: 0 })
+
+  const reservados: { pendente: PendenteLembrete; reservaId: string }[] = []
+  for (const pendente of fila) {
+    try {
+      const linhas = await inserir<{ id: string }>('agente_lembretes', {
+        consulta_id: pendente.consulta_id,
+        lead_id: pendente.lead_id,
+        tipo: pendente.tipo,
+      })
+      if (linhas.length) reservados.push({ pendente, reservaId: linhas[0].id })
+    } catch (e) {
+      console.error('reservar lembrete:', e)
+    }
+  }
+
+  const trabalho = (async () => {
+    for (const { pendente, reservaId } of reservados) {
+      try {
+        await mandarLembrete(pendente, reservaId)
+      } catch (e) {
+        console.error(`lembrete ${pendente.tipo} de consulta ${pendente.consulta_id}:`, e)
+        await apagar('agente_lembretes', `id=eq.${reservaId}`).catch(() => {})
+      }
+    }
+  })()
+  emSegundoPlano(trabalho)
+
+  return json({ ok: true, enviados: reservados.length })
+}
+
+function instrucaoDeLembrete(pendente: PendenteLembrete, fuso: string): string {
+  const dataFormatada = quando(pendente.data_consulta, fuso)
+  if (pendente.tipo === 'lembrete_24h') {
+    return [
+      '',
+      '',
+      '# AGORA: VOCÊ ESTÁ ENVIANDO UM LEMBRETE DE AGENDAMENTO (24H ANTES)',
+      '',
+      `O contato tem agendamento marcado:`,
+      `- Tipo de consulta / serviço: ${pendente.procedimento}`,
+      `- Data e hora: ${dataFormatada}`,
+      `- Profissional: ${pendente.profissional}`,
+      '',
+      'Escreva UMA mensagem curta, humana, acolhedora e direta (máximo 30 palavras) que:',
+      `1. Mencione claramente o tipo de consulta ("${pendente.procedimento}") e a data/horário exatos (${dataFormatada}).`,
+      '2. Pergunte com simpatia apenas se ela confirma a presença (exemplo: "Tudo certo para você?" ou "Podemos confirmar sua presença?").',
+      '3. NUNCA ofereça mudar, remarcar ou cancelar. Apenas peça a confirmação de presença. Se ela não puder, ela mesma dirá.',
+      '4. Nunca diga que é um robô ou mensagem automática.',
+      '5. ATENÇÃO: Use estritamente esta data e horário fornecidos. NÃO cite remarcações anteriores nem invente outras datas.',
+      '6. Nunca use palavras técnicas nem travessão entre orações.',
+      '',
+      'Responda APENAS com o texto da mensagem final. Não use ferramentas e não divida em várias mensagens.',
+    ].join('\n')
+  } else {
+    return [
+      '',
+      '',
+      '# AGORA: VOCÊ ESTÁ ENVIANDO UM AVISO DE REFORÇO (POUCAS HORAS ANTES)',
+      '',
+      `O contato tem agendamento marcado:`,
+      `- Tipo de consulta / serviço: ${pendente.procedimento}`,
+      `- Horário: ${dataFormatada}`,
+      `- Profissional: ${pendente.profissional}`,
+      'O lembrete de 24h já foi enviado anteriormente, mas a pessoa ainda não confirmou presença.',
+      '',
+      'Escreva UMA mensagem curta, gentil e acolhedora (máximo 25 palavras) que:',
+      `1. Cite a consulta de ${pendente.procedimento} marcada para ${dataFormatada}.`,
+      '2. Pergunte gentilmente apenas se ela confirma a presença (exemplo: "Podemos confirmar sua presença?").',
+      '3. NUNCA ofereça mudar, remarcar ou cancelar. Apenas peça a confirmação de presença.',
+      '4. ATENÇÃO: Use estritamente esta data e horário fornecidos. NÃO cite remarcações anteriores nem invente outras datas.',
+      '5. Não cobre com tom ríspido, seja compreensiva e acolhedora.',
+      '',
+      'Responda APENAS com o texto da mensagem final. Não use ferramentas e não divida em várias mensagens.',
+    ].join('\n')
+  }
+}
+
+async function mandarLembrete(pendente: PendenteLembrete, reservaId: string): Promise<void> {
+  const cAtual = await selecionar<{ status: string; confirmado: boolean | null }>(
+    `consultas?select=status,confirmado&id=eq.${pendente.consulta_id}&limit=1`,
+  )
+  if (!cAtual.length || cAtual[0].status !== 'agendada' || cAtual[0].confirmado === true) {
+    await apagar('agente_lembretes', `id=eq.${reservaId}`)
+    console.log(`lembrete cancelado: consulta ${pendente.consulta_id} não está mais agendada ou já foi confirmada`)
+    return
+  }
+
+  const leads = await selecionar<Lead>(
+    `crm_clinica?select=${CAMPOS_LEAD}&id=eq.${pendente.lead_id}&limit=1`,
+  )
+  const lead = leads[0]
+  if (!lead) throw new Error('lead sumiu entre a fila e o envio do lembrete')
+
+  const cfg = await selecionar<{ modelo: string; prompt: string | null; nome_agente: string }>(
+    'configuracoes_agente?select=modelo,prompt,nome_agente&limit=1',
+  )
+  const clinica = await selecionar<{ fuso_horario: string | null }>(
+    'configuracoes_clinica?select=fuso_horario&limit=1',
+  )
+  const fuso = clinica[0]?.fuso_horario || FUSO_PADRAO
+
+  const ficha = await montarFicha(lead.id, lead, fuso)
+  const sistema = (await montarPrompt(cfg[0]?.prompt, ficha, cfg[0]?.nome_agente)) +
+    instrucaoDeLembrete(pendente, fuso)
+
+  // O lembrete NÃO usa o histórico da conversa. Todos os dados necessários
+  // (procedimento, data, profissional) já estão na instrução dentro de `sistema`.
+  // Passar o histórico confunde o modelo: se houve remarcações anteriores, ele
+  // lê "sua consulta foi remarcada para 02/11" e reproduz isso no texto do
+  // lembrete, mesmo que a consulta atual seja outra.
+  const r = await conversar({
+    modelo: cfg[0]?.modelo ?? 'gpt-4.1-mini',
+    sistema,
+    mensagens: [{ papel: 'user', conteudo: '[Enviar o lembrete agora.]' }],
+    ferramentas: [],
+  })
+
+  const texto = r.texto.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean)[0] ?? ''
+  if (!texto) throw new Error('o modelo devolveu texto vazio para o lembrete')
+  if (!/[a-zA-ZÀ-ÿ0-9]/.test(texto)) {
+    throw new Error(`o modelo devolveu apenas emojis ou símbolos no lembrete: "${texto}"`)
+  }
+
+  const ponte = await ponteAtiva()
+  const pausa = Math.min(5000, Math.max(1200, texto.length * 22))
+  await ponte.digitando(pendente.whatsapp, pausa)
+  await new Promise((espere) => setTimeout(espere, pausa))
+
+  const idExterno = await ponte.enviarTexto(pendente.whatsapp, texto)
+
+  await inserir('mensagens_whatsapp', {
+    lead_id: lead.id,
+    autor: 'agente',
+    tipo: 'texto',
+    conteudo: texto,
+    id_externo: idExterno,
+    lida: true,
+  }, true)
+
+  const agoraIso = new Date().toISOString()
+  if (pendente.tipo === 'lembrete_24h') {
+    await atualizar('consultas', `id=eq.${pendente.consulta_id}`, { lembrete_enviado_em: agoraIso })
+  } else {
+    await atualizar('consultas', `id=eq.${pendente.consulta_id}`, { lembrete_reforco_em: agoraIso })
+  }
+
+  await atualizar('agente_lembretes', `id=eq.${reservaId}`, { texto })
+  console.log(`lembrete ${pendente.tipo} enviado para consulta ${pendente.consulta_id} do lead ${lead.id}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -1066,6 +1242,24 @@ async function acharOuCriarLead(whatsapp: string): Promise<Lead> {
 }
 
 /**
+ * O histórico para o follow-up TERMINA COM A AGENTE (a última fala foi dela),
+ * e a Gemini recusa isso com 400 — "single turn requests end with a user role".
+ * Um turno de usuário no fim resolve para todas as ponteiras; o texto só
+ * aponta para a instrução que já está no fim do prompt do sistema.
+ */
+async function montarHistoricoParaFollowUp(leadId: string): Promise<MensagemLLM[]> {
+  const historico = await montarHistorico(leadId)
+  if (historico[historico.length - 1]?.papel === 'user') return historico
+  return [
+    ...historico,
+    {
+      papel: 'user',
+      conteudo: '[Aviso interno: a pessoa não respondeu. Escreva agora a mensagem de retomada, conforme a instrução do final do prompt.]',
+    },
+  ]
+}
+
+/**
  * A conversa como o modelo vê — **texto puro, do começo ao fim**.
  *
  * A foto já chegou aqui descrita em uma linha (ver `descreverImagem`), e o
@@ -1212,8 +1406,9 @@ async function rotaWebhookClientes(req: Request): Promise<Response> {
   if (!corpo) return json({ ok: true, ignorado: 'corpo_invalido' })
 
   const ponte = ponteClientes(cfg)
-  // Aqui o que o próprio número manda (digitado no celular) também é atendimento.
-  const lido = ponte.lerWebhook(corpo, { incluirPropria: true })
+  // Aqui o que o próprio número manda (digitado no celular) também é atendimento,
+  // e a equipe vê tudo que chega: vídeo e PDF incluídos (o canal da IA não pede).
+  const lido = ponte.lerWebhook(corpo, { incluirPropria: true, todasAsMidias: true })
 
   if (lido.tipo === 'ignorar') {
     console.log(`webhook clientes ignorado (${ponte.nome}): ${lido.motivo}`)
@@ -1237,6 +1432,11 @@ async function rotaWebhookClientes(req: Request): Promise<Response> {
   // Duplicata (id_externo repetido): a ponte reenviou. Já está salvo.
   if (!criadas.length) return json({ ok: true, ignorado: 'duplicada' })
 
+  // O arquivo, se houver, é baixado e guardado em segundo plano — o webhook não
+  // espera, a ponte reenvia o que demora. Fica ANTES do corte da mensagem
+  // própria: o que sai do celular do 2º número também tem arquivo para guardar.
+  emSegundoPlano(guardarMidiaCliente(ponte, cliente.id, criadas[0].id, recebida))
+
   // Mensagem nossa não dispara boas-vindas nem conta como contato do cliente.
   if (recebida.propria) return json({ ok: true, propria: true })
 
@@ -1250,6 +1450,97 @@ async function rotaWebhookClientes(req: Request): Promise<Response> {
   emSegundoPlano(enviarBoasVindasSeNecessario(cfg, ponte, cliente, recebida.whatsapp))
 
   return json({ ok: true })
+}
+
+/**
+ * Teto do arquivo que guardamos.
+ *
+ * O arquivo passa INTEIRO pela memória da função, em base64: um vídeo grande
+ * derrubaria a execução. 16 MB é um ponto de partida, não uma medição — ajuste
+ * depois de ver o uso real.
+ */
+const MAX_MIDIA_BYTES = 16 * 1024 * 1024
+
+/**
+ * A extensão do arquivo guardado: a do nome original, quando há, e a do tipo
+ * MIME quando não. `mime.split('/')[1]` não serve — um `.docx` viraria uma
+ * extensão de 60 caracteres, e `octet-stream` viraria `.octet-stream`.
+ */
+function extensaoDoArquivo(nome: string | null | undefined, mime: string): string {
+  const doNome = /\.([a-z0-9]{1,8})$/i.exec(nome ?? '')?.[1]
+  if (doNome) return doNome.toLowerCase()
+
+  const MAPA: Record<string, string> = {
+    'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a',
+    'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+    'video/mp4': 'mp4', 'application/pdf': 'pdf',
+  }
+  return MAPA[mime.toLowerCase().split(';')[0].trim()] ?? 'bin'
+}
+
+/**
+ * Baixa o arquivo de uma mensagem do canal de clientes e o guarda no bucket.
+ *
+ * Caminho: `clientes/{cliente_id}/{mensagem_id}.{ext}`. O prefixo `clientes/`
+ * separa estes arquivos dos do canal da IA (`{lead_id}/...`), que a rota de
+ * apagar pessoa varre por prefixo.
+ *
+ * ⚠️ Falha vira texto. Sem isso o balão ficaria vazio e ninguém saberia por
+ * quê — o mesmo princípio do canal da IA, só que aqui quem lê é a equipe.
+ */
+async function guardarMidiaCliente(
+  ponte: Ponte,
+  clienteId: string,
+  mensagemId: string,
+  recebida: MensagemRecebida,
+): Promise<void> {
+  if (!recebida.midia) return
+
+  try {
+    const midia = await ponte.baixarMidia(recebida.midia)
+    if (!midia) throw new Error('o download não devolveu o arquivo')
+
+    const bytes = Uint8Array.from(atob(midia.base64), (c) => c.charCodeAt(0))
+    if (bytes.length > MAX_MIDIA_BYTES) {
+      throw new Error(`arquivo grande demais: ${bytes.length} bytes`)
+    }
+
+    const extensao = extensaoDoArquivo(recebida.nomeArquivo, midia.tipoMime)
+    const caminho = `clientes/${clienteId}/${mensagemId}.${extensao}`
+
+    await subirMidia(caminho, bytes, midia.tipoMime)
+    await atualizar('mensagens_clientes', `id=eq.${mensagemId}`, {
+      midia_url: caminho,
+      midia_nome: recebida.nomeArquivo ?? null,
+      midia_mime: midia.tipoMime,
+    })
+
+    // Áudio do CLIENTE vira texto também, como no canal da IA: a equipe lê o
+    // que foi dito sem precisar ouvir. O player continua no balão, e o texto
+    // vai embaixo. Áudio nosso (`propria`) não é transcrito — é gastar a
+    // transcrição com algo que a equipe acabou de gravar.
+    //
+    // Fica DEPOIS de guardar o arquivo e tem try próprio: falhar a
+    // transcrição não pode jogar fora o áudio, que já está guardado e toca.
+    if (recebida.tipo === 'audio' && !recebida.propria) {
+      try {
+        const texto = await transcrever(bytes, midia.tipoMime)
+        await atualizar('mensagens_clientes', `id=eq.${mensagemId}`, {
+          conteudo: texto ?? '[áudio que não consegui entender]',
+        })
+      } catch (e) {
+        console.error(`transcricao do audio do cliente ${mensagemId}:`, e)
+      }
+    }
+  } catch (e) {
+    console.error(`midia do cliente (${recebida.tipo}) ${mensagemId}:`, e)
+    // A legenda, se houver, é da pessoa e fica. Só preenche quando não há texto.
+    if (!recebida.texto) {
+      await atualizar('mensagens_clientes', `id=eq.${mensagemId}`, {
+        conteudo: '[não consegui baixar este arquivo]',
+      }).catch(() => {})
+    }
+  }
 }
 
 async function enviarBoasVindasSeNecessario(
@@ -1294,7 +1585,10 @@ async function rotaEnviarClientes(req: Request): Promise<Response> {
   const corpo = await req.json().catch(() => ({}))
   const clienteId = String(corpo.cliente_id ?? '').trim()
   const texto = String(corpo.texto ?? '').trim()
-  if (!clienteId || !texto) return json({ ok: false, motivo: 'dados_invalidos' }, 400)
+  // `midia` presente = envio de arquivo, e o `texto` vira a legenda (opcional).
+  // Sem `midia`, o texto é obrigatório — como sempre foi.
+  const midia = corpo.midia as Record<string, unknown> | undefined
+  if (!clienteId || (!texto && !midia)) return json({ ok: false, motivo: 'dados_invalidos' }, 400)
 
   const clientes = await selecionar<{ whatsapp: string }>(
     `clientes_chat?select=whatsapp&id=eq.${clienteId}&limit=1`,
@@ -1306,6 +1600,11 @@ async function rotaEnviarClientes(req: Request): Promise<Response> {
   if (!cfg?.clientes_chat_ativo) return json({ ok: false, motivo: 'canal_desativado' }, 400)
 
   const ponte = ponteClientes(cfg)
+
+  if (midia) {
+    return await enviarArquivoCliente(ponte, whatsapp, clienteId, usuario.id, midia, texto)
+  }
+
   const idExterno = await ponte.enviarTexto(whatsapp, texto)
 
   await inserir('mensagens_clientes', {
@@ -1317,6 +1616,75 @@ async function rotaEnviarClientes(req: Request): Promise<Response> {
     enviada_por: usuario.id,
     lida: true,
   }, true)
+
+  return json({ ok: true })
+}
+
+const TIPOS_DE_ARQUIVO = ['imagem', 'video', 'documento', 'audio'] as const
+
+/**
+ * Manda para o cliente um arquivo que o painel já subiu para o bucket.
+ *
+ * O navegador sobe o arquivo ele mesmo (a política de Storage deixa o usuário
+ * logado gravar) e aqui chega só a REFERÊNCIA: o caminho, o nome e o tipo. É o
+ * que mantém o corpo da requisição pequeno — arquivo em base64 dentro do JSON
+ * estoura o limite da função muito antes dos 16 MB.
+ *
+ * ⚠️ O caminho precisa estar na pasta DESTE cliente. Sem a conferência, quem
+ * tem login poderia mandar para um cliente qualquer arquivo do bucket — inclusive
+ * a foto que outro cliente enviou.
+ */
+async function enviarArquivoCliente(
+  ponte: Ponte,
+  whatsapp: string,
+  clienteId: string,
+  usuarioId: string,
+  midia: Record<string, unknown>,
+  legenda: string,
+): Promise<Response> {
+  const caminho = String(midia.caminho ?? '')
+  const tipo = String(midia.tipo ?? '') as ArquivoParaEnviar['tipo']
+  const nome = String(midia.nome ?? '').trim() || 'arquivo'
+  const mime = String(midia.mime ?? '').trim() || 'application/octet-stream'
+
+  if (!TIPOS_DE_ARQUIVO.includes(tipo)) return json({ ok: false, motivo: 'tipo_invalido' }, 400)
+  if (!caminho.startsWith(`clientes/${clienteId}/`) || caminho.includes('..')) {
+    return json({ ok: false, motivo: 'caminho_invalido' }, 400)
+  }
+
+  let idExterno: string | null
+  try {
+    const url = await urlAssinada(caminho)
+    idExterno = await ponte.enviarMidia(whatsapp, { tipo, url, nome, mime, legenda: legenda || null })
+  } catch (e) {
+    if (e instanceof Error && e.message === 'ponte_sem_envio_de_midia') {
+      return json({ ok: false, motivo: 'ponte_sem_envio_de_midia' }, 501)
+    }
+    console.error(`envio de ${tipo} para o cliente ${clienteId}:`, e)
+    return json({ ok: false, motivo: 'falha_no_envio' }, 502)
+  }
+
+  const campos = { midia_url: caminho, midia_nome: nome, midia_mime: mime }
+  const criadas = await inserir('mensagens_clientes', {
+    cliente_id: clienteId,
+    autor: 'atendente',
+    tipo,
+    conteudo: legenda,
+    id_externo: idExterno,
+    enviada_por: usuarioId,
+    lida: true,
+    ...campos,
+  }, true)
+
+  // Vazio = o eco do webhook chegou antes e já criou a linha, sem o arquivo
+  // (ele é gravado por outro caminho). Completa a linha dele em vez de perder.
+  if (!criadas.length && idExterno) {
+    await atualizar(
+      'mensagens_clientes',
+      `id_externo=eq.${encodeURIComponent(idExterno)}&midia_url=is.null`,
+      { ...campos, enviada_por: usuarioId },
+    ).catch((e) => console.error('completar eco com a mídia enviada:', e))
+  }
 
   return json({ ok: true })
 }

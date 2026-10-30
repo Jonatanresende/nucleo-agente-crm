@@ -98,8 +98,13 @@ export interface MensagemRecebida {
   /** `texto` | `audio` | `imagem` | `video` | `documento` */
   tipo: string
   texto: string | null
-  /** `null` quando não há o que baixar — inclusive em vídeo e documento. */
+  /**
+   * `null` quando não há o que baixar. Vídeo e documento só têm referência
+   * quando o chamador pede `todasAsMidias`.
+   */
   midia: Midia | null
+  /** O nome original do arquivo — só em documento. */
+  nomeArquivo?: string | null
   /**
    * `true` quando a mensagem saiu do PRÓPRIO número (digitada no celular, no
    * WhatsApp Web...). Só aparece quando o chamador pede `incluirPropria` —
@@ -112,6 +117,12 @@ export interface MensagemRecebida {
 export interface OpcoesLeitura {
   /** Em vez de descartar o que o próprio número mandou, devolve marcado como `propria`. */
   incluirPropria?: boolean
+  /**
+   * Também monta a referência de vídeo e documento. O canal da IA não pede: o
+   * modelo não assiste vídeo nem lê PDF, e baixar para guardar sem ler é custo
+   * de Storage sem retorno. O canal de clientes é humano, e pede.
+   */
+  todasAsMidias?: boolean
 }
 
 /**
@@ -125,6 +136,37 @@ export interface OpcoesLeitura {
 export type Recebimento =
   | { tipo: 'mensagem'; mensagem: MensagemRecebida }
   | { tipo: 'ignorar'; motivo: string }
+
+// ---------------------------------------------------------------------------
+// O que sai
+// ---------------------------------------------------------------------------
+
+/**
+ * Um arquivo a mandar para o contato.
+ *
+ * O arquivo **já está no Storage**: a tela o sobe direto para o bucket e a
+ * função só gera uma URL assinada e curta. Assim ele não passa pela memória da
+ * função (exceto o áudio — ver `enviarMidia` na Evolution).
+ */
+export interface ArquivoParaEnviar {
+  tipo: 'imagem' | 'video' | 'documento' | 'audio'
+  /** URL assinada, de vida curta, de onde a ponte pode ler o arquivo. */
+  url: string
+  /** O nome que o contato vê num documento. */
+  nome: string
+  mime: string
+  /** O texto que acompanha. Áudio não tem legenda no WhatsApp: é ignorada. */
+  legenda?: string | null
+}
+
+/** Bytes em base64, em blocos: `String.fromCharCode(...bytes)` de um áudio inteiro estoura a pilha. */
+export function paraBase64(bytes: Uint8Array): string {
+  let bruto = ''
+  for (let i = 0; i < bytes.length; i += 8192) {
+    bruto += String.fromCharCode(...bytes.subarray(i, i + 8192))
+  }
+  return btoa(bruto)
+}
 
 // ---------------------------------------------------------------------------
 // A porta
@@ -152,6 +194,16 @@ export interface Ponte {
 
   /** Manda texto. Devolve o id da mensagem, que vira `id_externo`. */
   enviarTexto(numero: string, texto: string): Promise<string | null>
+
+  /**
+   * Manda um arquivo — foto, vídeo, documento ou áudio. Devolve o id da
+   * mensagem, que vira `id_externo`.
+   *
+   * ⚠️ **Lança** quando não saiu. Uma ponte que ainda não sabe enviar arquivo
+   * lança `ponte_sem_envio_de_midia`, e quem chama traduz isso para a tela: é
+   * melhor um aviso claro do que uma mensagem que "foi" e nunca chegou.
+   */
+  enviarMidia(numero: string, arquivo: ArquivoParaEnviar): Promise<string | null>
 
   /** Busca o arquivo pela referência que o `lerWebhook` desta mesma ponte montou. */
   baixarMidia(midia: Midia): Promise<{ base64: string; tipoMime: string } | null>

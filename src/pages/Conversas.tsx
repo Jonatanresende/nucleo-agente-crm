@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabase'
 import ListaConversas from '../components/ListaConversas'
 import JanelaConversa from '../components/JanelaConversa'
 import PainelLead from '../components/PainelLead'
+import PainelCliente from '../components/PainelCliente'
 import {
   listarConversas, carregarMensagens, enviarMensagem,
   assumirConversa, devolverConversa, marcarComoLidas,
@@ -16,7 +17,7 @@ import {
 import ListaConversasClientes from '../components/ListaConversasClientes'
 import JanelaConversaClientes from '../components/JanelaConversaClientes'
 import {
-  listarConversasClientes, carregarMensagensCliente, enviarMensagemCliente,
+  listarConversasClientes, carregarMensagensCliente, enviarMensagemCliente, enviarArquivoCliente,
   assumirContatoCliente, devolverContatoCliente, marcarClienteComoLido,
 } from '../lib/conversas-clientes'
 
@@ -93,25 +94,25 @@ export default function Conversas() {
     listarConversas()
       .then((c) => { setConversas(c); setCarregandoLista(false) })
       .catch(() => { setErro('Não consegui carregar as conversas.'); setCarregandoLista(false) }),
-  [])
+    [])
 
   const recarregarMensagens = useCallback((leadId: string) =>
     carregarMensagens(leadId)
       .then((m) => { setMensagens(m); setCarregandoConversa(false) })
       .catch(() => { setErro('Não consegui carregar esta conversa.'); setCarregandoConversa(false) }),
-  [])
+    [])
 
   const recarregarListaClientes = useCallback(() =>
     listarConversasClientes()
       .then((c) => { setConversasClientes(c); setCarregandoListaClientes(false) })
       .catch(() => { setErroCliente('Não consegui carregar as conversas.'); setCarregandoListaClientes(false) }),
-  [])
+    [])
 
   const recarregarMensagensCliente = useCallback((clienteId: string) =>
     carregarMensagensCliente(clienteId)
       .then((m) => { setMensagensCliente(m); setCarregandoConversaCliente(false) })
       .catch(() => { setErroCliente('Não consegui carregar esta conversa.'); setCarregandoConversaCliente(false) }),
-  [])
+    [])
 
   // ── Carregamento inicial ──────────────────────────────────────────────────
 
@@ -230,6 +231,28 @@ export default function Conversas() {
       setErroCliente('A mensagem não saiu. Confira a conexão do 2º número.')
     }
     setEnviandoCliente(false)
+  }
+
+  async function aoEnviarArquivoCliente(arquivo: File, legenda: string): Promise<boolean> {
+    if (!selecionadaCliente) return false
+    setEnviandoCliente(true); setErroCliente('')
+    let ok = false
+    try {
+      await enviarArquivoCliente(selecionadaCliente, arquivo, legenda)
+      await recarregarMensagensCliente(selecionadaCliente)
+      await recarregarListaClientes()
+      ok = true
+    } catch (e) {
+      const motivo = e instanceof Error ? e.message : ''
+      setErroCliente(
+        motivo === 'arquivo_grande_demais' ? 'O arquivo passa de 16 MB.'
+          : motivo === 'ponte_sem_envio_de_midia' ? 'Esta conexão ainda não envia arquivos.'
+            : motivo === 'falha_no_upload' ? 'Não consegui subir o arquivo. Tente de novo.'
+              : 'O arquivo não saiu. Confira a conexão do 2º número.',
+      )
+    }
+    setEnviandoCliente(false)
+    return ok
   }
 
   async function aoAssumirCliente() {
@@ -364,19 +387,23 @@ export default function Conversas() {
               carregando={carregandoListaClientes}
             />
             <JanelaConversaClientes
+              key={`janela-${abertaCliente?.cliente_id ?? 'nenhuma'}`}
               conversa={abertaCliente}
               mensagens={mensagensCliente}
               carregando={carregandoConversaCliente}
               enviando={enviandoCliente}
               erro={erroCliente}
               onEnviar={aoEnviarCliente}
+              onEnviarArquivo={aoEnviarArquivoCliente}
               onAssumir={aoAssumirCliente}
               onDevolver={aoDevolverCliente}
               usuarioId={usuarioId}
               painelAberto={painelClienteAberto}
               onAlternarPainel={alternarPainelCliente}
             />
-            {/* Sem PainelLead no canal de clientes — não há lead no CRM de anúncios */}
+            {painelClienteAberto && abertaCliente && (
+              <PainelCliente key={abertaCliente.cliente_id} conversa={abertaCliente} onFechar={alternarPainelCliente} />
+            )}
           </>
         )}
       </div>

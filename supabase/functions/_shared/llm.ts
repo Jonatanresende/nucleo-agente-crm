@@ -584,10 +584,21 @@ export async function transcrever(bytes: Uint8Array, tipoMime: string): Promise<
         const dados = await r.json()
         const texto = (dados?.text ?? '').trim()
         if (texto) return texto
+        console.error(`transcrever openai: texto vazio (${tipoMime}, ${bytes.length} bytes)`)
+      } else {
+        // Sem esta linha a falha era silenciosa: o balão dizia "não consegui
+        // entender" e nada no log explicava por quê.
+        console.error(
+          `transcrever openai: ${r.status} (${tipoMime}, ${bytes.length} bytes)`,
+          (await r.text()).slice(0, 300),
+        )
       }
-    } catch {
+    } catch (e) {
       // Falha OpenAI tenta Gemini
+      console.error('transcrever openai:', e)
     }
+  } else {
+    console.error('transcrever: sem OPENAI_API_KEY nas secrets da função')
   }
 
   // Fallback Gemini

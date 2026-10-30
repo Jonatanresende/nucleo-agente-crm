@@ -23,8 +23,8 @@
 
 import {
   foraDoAr, soDigitos,
-  type Conexao, type Estado, type Midia, type OpcoesLeitura, type Ponte, type Recebimento,
-  type WebhookLido,
+  type ArquivoParaEnviar, type Conexao, type Estado, type Midia, type OpcoesLeitura,
+  type Ponte, type Recebimento, type WebhookLido,
 } from './whatsapp.ts'
 
 /** O mesmo prazo da Evolution: passou disso, para quem olha a tela é "fora do ar". */
@@ -236,6 +236,22 @@ export function criarPonteUazapi(opcoes?: OpcoesUazapi): Ponte {
   }
 
   /**
+   * ⚠️ AINDA NÃO IMPLEMENTADO — de propósito, e com erro claro.
+   *
+   * O envio de mídia começou pela Evolution, que é a que foi testada na
+   * instância real. A rota da uazapi está na documentação (`POST /send/media`,
+   * com `number`, `type`, `file` em URL ou base64, `text` para a legenda e
+   * `docName` para o nome do documento), mas **nunca foi chamada neste
+   * projeto** — e o próprio README avisa que a documentação dela já enganou
+   * uma vez. Escrever sem testar seria entregar um botão que parece funcionar.
+   *
+   * Quem chama traduz este erro para a tela (`ponte_sem_envio_de_midia`).
+   */
+  async function enviarMidia(_numero: string, _arquivo: ArquivoParaEnviar): Promise<string | null> {
+    throw new Error('ponte_sem_envio_de_midia')
+  }
+
+  /**
    * Pede à uazapi que descriptografe a mídia e a hospede.
    *
    * `POST /message/download` com o `messageid` devolve
@@ -404,6 +420,7 @@ export function criarPonteUazapi(opcoes?: OpcoesUazapi): Ponte {
     apontarWebhook,
     digitando,
     enviarTexto,
+    enviarMidia,
     baixarMidia,
     fotoDoPerfil,
     estadoDaConexao,
